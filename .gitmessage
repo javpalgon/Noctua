@@ -1,0 +1,33 @@
+# <tipo>(alcance): <descripción>
+#
+# [cuerpo opcional]
+#
+# Closes #<issue>
+# ──────────────────────────────────────────
+# Tipos (Conventional Commits):
+#   feat   Nueva funcionalidad
+#   fix    Corrección de bug
+#   docs   Documentación
+#
+# Reglas:
+#   - Usa imperativo: "añade" no "añadido"
+#   - Primera letra minúscula
+#   - Sin punto al final
+#   - Máximo 50 caracteres en descripción
+#
+# IMPORTANTE: En commits a trunk, incluir siempre:
+#   Closes #<número_issue>
+#
+# Ejemplos:
+#   feat(auth): añade login con Google
+#
+#   Closes #12
+#
+#   fix(api): corrige validación de email
+#
+#   Closes #45
+#
+#   docs: actualiza README
+#
+#   Closes #8
+# ──────────────────────────────────────────
