@@ -7,11 +7,13 @@ assignees: ''
 ---
 
 ## Descripción
-Descripción clara de la funcionalidad.
+<!-- Descripción clara de la funcionalidad -->
 
 ## Criterios de Aceptación
+<!-- 
 - [ ] Criterio 1
 - [ ] Criterio 2
+-->
 
 ## Notas
-Información adicional relevante.
+<!-- Información adicional relevante -->
