@@ -7,11 +7,13 @@ assignees: ''
 ---
 
 ## Descripción
-Descripción de la tarea.
+<!-- Descripción de la tarea -->
 
 ## Objetivos
+<!-- 
 - [ ] Objetivo 1
 - [ ] Objetivo 2
+-->
 
 ## Notas
-Información adicional relevante.
+<!-- Información adicional relevante -->
