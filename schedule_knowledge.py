@@ -1,0 +1,166 @@
+import asyncio
+from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, BFSDeepCrawlStrategy
+from models import ClientConfig
+from knowledge_graph_builder import KnowledgeGraphBuilder
+from pathlib import Path
+from dotenv import load_dotenv
+import os
+import re
+
+load_dotenv()
+
+# Configuración
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "zephyr:latest")
+OUTPUT_DIR = Path("./knowledge_graphs")
+SAVE_TO_NEO4J = os.getenv("NEO4J_URI") is not None  # Auto-detectar si usar Neo4j
+
+def limpiar_markdown(texto: str) -> str:
+    """Limpia el markdown eliminando scripts, estilos y caracteres no deseados."""
+    lineas_limpias=[]
+    for linea in texto.split("\n"):
+
+        linea_strip=linea.strip()
+        # Saltar lineas vacías
+        if not linea_strip:
+            continue
+
+        #Saltar líneas cortas
+        if len(linea_strip)<15:
+            continue
+
+        # Saltar líneas que son links
+        sin_links = re.sub(r'\[.*?\]\(.*?\)', '', linea_strip).strip()
+        if len(sin_links) < 10:
+            continue
+
+        #Saltar lineas con muchos links
+        num_links = len(re.findall(r'\[.*?\]\(.*?\)', linea_strip))
+        if num_links > 3:
+            continue
+
+        # Saltar líneas que parecen footers/legales
+        palabras_footer = ["cookie", "privacy", "©", "copyright", "terms of", "política de"]
+        if any(p in linea_strip.lower() for p in palabras_footer):
+            continue
+
+        #Saltar separadores markdown
+        if linea_strip.startswith("---") or linea_strip.startswith("==="):
+            continue
+
+        lineas_limpias.append(linea_strip)
+
+    return "\n".join(lineas_limpias)
+
+async def rastreo_web(cliente: ClientConfig, save_to_neo4j: bool = True):
+    """
+    Rastrea la web del cliente y genera un grafo de conocimiento.
+    
+    Args:
+        cliente: Configuración del cliente
+        save_to_neo4j: Si True, guarda en Neo4j además de en local
+    """
+    
+    print(f"\n{'='*50}")
+    print(f"[RASTREO] Iniciando rastreo web para {cliente.company_name}")
+    print(f"[RASTREO] URL: {cliente.url_portal}")
+    print(f"{'='*50}\n")
+
+    crawl_strategy = BFSDeepCrawlStrategy(max_depth=1)
+    configuration = CrawlerRunConfig(
+        exclude_external_links=True, 
+        exclude_all_images=True, 
+        deep_crawl_strategy=crawl_strategy, 
+        verbose=True
+    )
+
+    async with AsyncWebCrawler() as crawler:
+        results = await crawler.arun(url=str(cliente.url_portal), config=configuration)
+
+        # Concatenar todo el markdown de las páginas rastreadas
+        markdown_completo = ""
+        paginas_exitosas = 0
+
+        for pagina in results:
+            if pagina.success:
+                header = f"\n\n# Página: {pagina.url}\n\n"
+                markdown_completo += header + pagina.markdown
+                paginas_exitosas += 1
+            else:
+                print(f"[RASTREO] ❌ Error al rastrear {pagina.url}: {pagina.error_message}")
+
+        print(f"\n[RASTREO] ✅ Rastreadas {paginas_exitosas} páginas")
+        print(f"[RASTREO] 📄 Total de caracteres: {len(markdown_completo)}")
+
+        if not markdown_completo.strip():
+            print("[RASTREO] ❌ No se obtuvo contenido para procesar")
+            return None
+
+        # Construir el grafo de conocimiento
+        print(f"\n{'='*50}")
+        print(f"[KNOWLEDGE GRAPH] Generando grafo de conocimiento...")
+        print(f"{'='*50}\n")
+
+        try:
+            kg = KnowledgeGraphBuilder(
+                model=OLLAMA_MODEL, 
+                ollama_url=OLLAMA_URL,
+                chunk_size=1500
+            )
+            markdown_limpio = limpiar_markdown(markdown_completo)
+            graph = kg.build_from_text(markdown_limpio, verbose=True)
+
+            if not graph["nodes"]:
+                print("[KNOWLEDGE GRAPH] ⚠️ No se extrajeron conceptos del texto")
+                return None
+            
+            # Guardar en Neo4j si está configurado y tenemos client_id
+            if save_to_neo4j and SAVE_TO_NEO4J and cliente.client_id:
+                print(f"\n[NEO4J] Guardando grafo en Neo4j...")
+                kg.save_to_neo4j(
+                    client_id=cliente.client_id,
+                    graph=graph
+                )
+            elif save_to_neo4j and not cliente.client_id:
+                print(f"[NEO4J] ⚠️ No se guardó en Neo4j: falta client_id")
+        
+            print(f"\n{'='*50}")
+            print(f"[RESUMEN] Grafo de conocimiento generado:")
+            print(f"          - Conceptos (nodos): {len(graph['nodes'])}")
+            print(f"          - Relaciones (aristas): {len(graph['edges'])}")
+            print(f"          - Neo4j: {'✅ Guardado' if (save_to_neo4j and SAVE_TO_NEO4J and cliente.client_id) else '❌ No guardado'}")
+            print(f"{'='*50}\n")
+            
+            return graph
+            
+        except ConnectionError as e:
+            print(f"[KNOWLEDGE GRAPH] ❌ Error de conexión con Ollama: {e}")
+            return None
+        except Exception as e:
+            print(f"[KNOWLEDGE GRAPH] ❌ Error al generar grafo: {e}")
+            return None
+
+if __name__ == "__main__":
+    print("\n" + "="*60)
+    print("🚀 INICIANDO GENERACIÓN DE GRAFO DE CONOCIMIENTO")
+    print("="*60 + "\n")
+    
+    # Ejemplo: cliente sin guardar en Neo4j (sin client_id)
+    # Para guardar en Neo4j, el cliente debe existir en PostgreSQL primero
+    cliente_ejemplo = ClientConfig(
+        company_name="MoonTerraza",
+        url_portal="http://0.0.0.0:8001/",
+        client_id=None,  # Sin ID = no se guarda en Neo4j
+        api_key=None
+    )
+    
+    graph = asyncio.run(rastreo_web(cliente_ejemplo))
+    
+    if graph:
+        print("\n" + "="*60)
+        print("✅ GRAFO DE CONOCIMIENTO GENERADO EXITOSAMENTE")
+        print("="*60 + "\n")
+    else:
+        print("\n" + "="*60)
+        print("❌ ERROR AL GENERAR EL GRAFO DE CONOCIMIENTO")
+        print("="*60 + "\n")

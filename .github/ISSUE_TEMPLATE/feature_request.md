@@ -1,7 +1,7 @@
 ---
 name: ✨ Feature
 about: Nueva funcionalidad para el proyecto
-title: '[FEAT] '
+title: '[FEAT]: '
 labels: feat
 assignees: ''
 ---
