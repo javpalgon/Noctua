@@ -1,7 +1,7 @@
 import asyncio
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, BFSDeepCrawlStrategy
-from models import ClientConfig
-from knowledge_graph_builder import KnowledgeGraphBuilder
+from app.schemas.client import ClientConfig
+from app.services.knowledge_graph_builder import KnowledgeGraphBuilder
 from pathlib import Path
 from dotenv import load_dotenv
 import os
@@ -25,14 +25,14 @@ def limpiar_markdown(texto: str) -> str:
         if not linea_strip:
             continue
 
-        #Saltar líneas cortas
-        if len(linea_strip)<15:
-            continue
+        # #Saltar líneas cortas
+        # if len(linea_strip)<15:
+        #     continue
 
-        # Saltar líneas que son links
-        sin_links = re.sub(r'\[.*?\]\(.*?\)', '', linea_strip).strip()
-        if len(sin_links) < 10:
-            continue
+        # # Saltar líneas que son links
+        # sin_links = re.sub(r'\[.*?\]\(.*?\)', '', linea_strip).strip()
+        # if len(sin_links) < 10:
+        #     continue
 
         #Saltar lineas con muchos links
         num_links = len(re.findall(r'\[.*?\]\(.*?\)', linea_strip))
@@ -66,11 +66,13 @@ async def rastreo_web(cliente: ClientConfig, save_to_neo4j: bool = True):
     print(f"[RASTREO] URL: {cliente.url_portal}")
     print(f"{'='*50}\n")
 
-    crawl_strategy = BFSDeepCrawlStrategy(max_depth=1)
+    # crawl_strategy = BFSDeepCrawlStrategy(max_depth=1)
     configuration = CrawlerRunConfig(
         exclude_external_links=True, 
         exclude_all_images=True, 
-        deep_crawl_strategy=crawl_strategy, 
+        # deep_crawl_strategy=crawl_strategy,
+        excluded_tags=["nav", "footer", "aside", "header", "script", "style"],
+        word_count_threshold=15,
         verbose=True
     )
 

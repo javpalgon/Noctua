@@ -1,7 +1,7 @@
 # Conexión SQLAlchemy y configuración de base de datos
 from sqlalchemy import create_engine  # Conexión a PostGreSQL. Con text para ejecutar comandos SQL directos sin necesidad de poner SQLs.
 from sqlalchemy.orm import sessionmaker, declarative_base # sessionmaker para crear sesiones de base de datos, declarative_base para definir modelos ORM
-from models import DatabaseConfig # Importar configuración de base de datos desde models.py
+from app.schemas.client import DatabaseConfig # Importar configuración de base de datos desde models.py
 
 # Crear la conexión a la base de datos
 engine = create_engine(DatabaseConfig.POSTGRES_URL)

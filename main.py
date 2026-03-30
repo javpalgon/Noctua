@@ -2,11 +2,11 @@ import asyncio
 import httpx
 from fastapi import FastAPI, Depends,  HTTPException, BackgroundTasks    
 from pydantic import BaseModel, HttpUrl
-from db.database import engine, Base, get_db
+from app.db.database import engine, Base, get_db
 from sqlalchemy.orm import Session
-import db.models_db as models_db # Importar modelos para que SQLAlchemy los reconozca
-from models import ClientConfig
-from schedule_knowledge import rastreo_web
+import app.db.models_db as models_db # Importar modelos para que SQLAlchemy los reconozca
+from app.schemas.client import ClientConfig
+from app.services.schedule_knowledge import rastreo_web
 
 Base.metadata.create_all(bind=engine)
 

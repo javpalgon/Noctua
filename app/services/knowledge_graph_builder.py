@@ -22,7 +22,7 @@ class OllamaClient:
         url = f"{self.base_url}/api/generate"
         payload = {"model": model, "prompt": prompt, "system": system, "stream": False}
         payload = {k: v for k, v in payload.items() if v is not None}
-        response = requests.post(url, json=payload, timeout=180)
+        response = requests.post(url, json=payload, timeout=600)
         response.raise_for_status()
         return response.json().get("response", "")
 
@@ -31,20 +31,25 @@ class KnowledgeGraphBuilder:
     
     EXTRACTION_PROMPT = """You are a knowledge graph extractor. Your ONLY task is to extract entities and their relationships from the given text.
 
-Rules:
-- Extract REAL concepts, entities, products, services, people, places, or organizations mentioned in the text.
-- Each relationship must connect two different concepts.
-- The "edge" field must be a short verb or phrase describing the relationship (e.g., "offers", "is located in", "is part of").
-- Output ONLY a valid JSON array. No explanation, no markdown, no extra text.
+CRITICAL RULES FOR METRICS, TABLES, AND NUMBERS:
+- If you detect structured data, tables, lists, rankings, or items with associated numbers (e.g., prices, scores, positions, quantities, dates), you MUST extract the numbers as individual nodes and link them to the main entity.
+- If the text has an overarching theme or context (e.g., a specific industry, sport, location, or company), extract that context as a node and link the main entities to it.
 
-Example output:
+EXAMPLES OF HOW TO HANDLE METRICS/TABLES:
+Text: "ID: 15 | John Doe | Dept: Sales | 2500 USD"
+Correct Output:
 [
-    {"node_1": "Restaurant La Luna", "node_2": "Mediterranean cuisine", "edge": "serves"},
-    {"node_1": "Restaurant La Luna", "node_2": "Madrid", "edge": "is located in"},
-    {"node_1": "terrace", "node_2": "Restaurant La Luna", "edge": "is part of"}
+  {"node_1": "John Doe", "node_2": "15", "edge": "has ID"},
+  {"node_1": "John Doe", "node_2": "Sales", "edge": "belongs to department"},
+  {"node_1": "John Doe", "node_2": "2500 USD", "edge": "has metric value"}
 ]
 
-Output ONLY the JSON array:"""
+GENERAL RULES:
+- Extract REAL concepts, entities, people, places, metrics, or organizations.
+- Each relationship must connect two different concepts.
+- The "edge" field must be a short, clear verb or descriptive phrase.
+- Output ONLY a valid JSON array of objects with keys "node_1", "node_2", and "edge". Do not add markdown, explanations, or text outside the JSON.
+"""
 
     def __init__(self, model: str = "zephyr:latest", ollama_url: str = "http://localhost:11434", chunk_size: int = 1500):
         self.model = model
@@ -112,8 +117,12 @@ Output ONLY the JSON array:"""
             print(f"📄 Procesando {len(chunks)} fragmentos...")
         
         all_relations = []
+        # Línea para probar con 5 chunks
+        chunks = chunks[:5] if len(chunks) > 5 else chunks
+
         for i, chunk in enumerate(chunks):
             print(f"Extrayendo el fragmento {i+1}/{len(chunks)}...")
+            print(f"Chunk extraído: {chunks[i]}")
             for rel in self._extract_from_chunk(chunk):
                 rel["node_1"] = rel.get("node_1", "").lower().strip()
                 rel["node_2"] = rel.get("node_2", "").lower().strip()
