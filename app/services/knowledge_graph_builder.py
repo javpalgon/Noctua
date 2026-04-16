@@ -51,10 +51,26 @@ GENERAL RULES:
 - Output ONLY a valid JSON array of objects with keys "node_1", "node_2", and "edge". Do not add markdown, explanations, or text outside the JSON.
 """
 
-    def __init__(self, model: str = "zephyr:latest", ollama_url: str = "http://localhost:11434", chunk_size: int = 1500):
+    def __init__(
+        self,
+        model: str = "zephyr:latest",
+        ollama_url: str = "http://localhost:11434",
+        chunk_size: int = 1500,
+        max_chunks: Optional[int] = None,
+    ):
         self.model = model
         self.chunk_size = chunk_size
+        self.max_chunks = max_chunks
         self.client = OllamaClient(ollama_url)
+
+    @staticmethod
+    def _normalize_text(value: Any) -> str:
+        """Normaliza valores de salida del LLM a texto seguro para el grafo."""
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            value = str(value)
+        return value.lower().strip()
     
     def _split_text(self, text: str) -> List[str]:
         chunks, start = [], 0
@@ -62,7 +78,11 @@ GENERAL RULES:
         while start < len(text):
             chunks.append(text[start:start + self.chunk_size])
             start += self.chunk_size - 150  # solapamiento de 150 caracteres para contexto
-        return chunks if chunks else [text]
+        if not chunks:
+            return [text]
+        if self.max_chunks is not None and self.max_chunks > 0:
+            return chunks[: self.max_chunks]
+        return chunks
     
     def _extract_from_chunk(self, chunk: str) -> List[Dict]:
         prompt = f"Extract the knowledge graph from this text:\n\n{chunk}\n\nJSON output:"
@@ -118,15 +138,17 @@ GENERAL RULES:
         
         all_relations = []
         # Línea para probar con 5 chunks
-        chunks = chunks[:5] if len(chunks) > 5 else chunks
+        # chunks = chunks[:5] if len(chunks) > 5 else chunks
 
         for i, chunk in enumerate(chunks):
             print(f"Extrayendo el fragmento {i+1}/{len(chunks)}...")
-            print(f"Chunk extraído: {chunks[i]}")
+            preview = chunk[:600].replace("\n", " ")
+            print(f"Chunk extraído (preview): {preview}")
             for rel in self._extract_from_chunk(chunk):
-                rel["node_1"] = rel.get("node_1", "").lower().strip()
-                rel["node_2"] = rel.get("node_2", "").lower().strip()
-                if rel["node_1"] and rel["node_2"]:
+                rel["node_1"] = self._normalize_text(rel.get("node_1", ""))
+                rel["node_2"] = self._normalize_text(rel.get("node_2", ""))
+                rel["edge"] = self._normalize_text(rel.get("edge", "related")) or "related"
+                if rel["node_1"] and rel["node_2"] and rel["node_1"] != rel["node_2"]:
                     all_relations.append(rel)
         
         if not all_relations:
@@ -138,7 +160,7 @@ GENERAL RULES:
             key = tuple(sorted([rel["node_1"], rel["node_2"]])) # Evita duplicados invertidos
             if key not in edge_groups:
                 edge_groups[key] = []
-            edge_groups[key].append(rel.get("edge", "related"))
+            edge_groups[key].append(self._normalize_text(rel.get("edge", "related")) or "related")
         
         edges = [{"node_1": k[0], "node_2": k[1], "edge": "; ".join(set(v))} for k, v in edge_groups.items()]
         nodes = list(set(e["node_1"] for e in edges) | set(e["node_2"] for e in edges))
@@ -338,7 +360,7 @@ GENERAL RULES:
                     LIMIT 50
                     """,
                     cid=client_id,
-                    terms=[t.lower().strip() for t in search_terms],
+                    terms=[self._normalize_text(t) for t in search_terms if self._normalize_text(t)],
                 )
 
                 nodes_set = set()

@@ -12,6 +12,7 @@ load_dotenv()
 # Configuración
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "zephyr:latest")
+KG_MAX_CHUNKS = int(os.getenv("KG_MAX_CHUNKS", "20"))
 OUTPUT_DIR = Path("./knowledge_graphs")
 SAVE_TO_NEO4J = os.getenv("NEO4J_URI") is not None  # Auto-detectar si usar Neo4j
 
@@ -24,15 +25,6 @@ def limpiar_markdown(texto: str) -> str:
         # Saltar lineas vacías
         if not linea_strip:
             continue
-
-        # #Saltar líneas cortas
-        # if len(linea_strip)<15:
-        #     continue
-
-        # # Saltar líneas que son links
-        # sin_links = re.sub(r'\[.*?\]\(.*?\)', '', linea_strip).strip()
-        # if len(sin_links) < 10:
-        #     continue
 
         #Saltar lineas con muchos links
         num_links = len(re.findall(r'\[.*?\]\(.*?\)', linea_strip))
@@ -107,7 +99,8 @@ async def rastreo_web(cliente: ClientConfig, save_to_neo4j: bool = True):
             kg = KnowledgeGraphBuilder(
                 model=OLLAMA_MODEL, 
                 ollama_url=OLLAMA_URL,
-                chunk_size=1500
+                chunk_size=1500,
+                max_chunks=KG_MAX_CHUNKS
             )
             markdown_limpio = limpiar_markdown(markdown_completo)
             graph = kg.build_from_text(markdown_limpio, verbose=True)

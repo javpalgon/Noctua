@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Noctua | Chatbots inteligentes para negocios</title>
+    <meta
+      name="description"
+      content="Noctua transforma la información de tu web en un asistente inteligente para tus clientes."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script>
+      // Configuración editable sin build tools
+      window.NOCTUA_CONFIG = {
+        apiBaseUrl: "http://localhost:8000",
+      };
+    </script>
+
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

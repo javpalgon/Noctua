@@ -5,8 +5,17 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 import os
 from dotenv import load_dotenv
+import unicodedata
 
 load_dotenv()
+
+def quitar_tildes(texto: str) -> str:
+    """Elimina tildes y acentos para mejorar la coincidencia en el LLM"""
+    texto_normalizado = unicodedata.normalize('NFD', texto)
+    texto_sin_tildes = ''.join(
+        c for c in texto_normalizado if unicodedata.category(c) != 'Mn'
+    )
+    return texto_sin_tildes
 
 class GraphQAService:
     def __init__(self):
@@ -60,7 +69,7 @@ class GraphQAService:
         2. SEGURIDAD: Inicia filtrando por el `client_id` exacto: MATCH (n:Concept {{{{client_id: '{client_id}'}}}})
         
         REGLAS DE BÚSQUEDA (¡CRÍTICO!):
-        3. Busca la entidad principal con regex flexible: WHERE principal.name =~ '(?i).*palabra_clave.*'
+        3. BÚSQUEDA FLEXIBLE Y APODOS (MUY IMPORTANTE): Si el usuario usa apodos ("Paquito", "Ari", "Ale", "Momo"), nombres incompletos o abreviaturas, DEBES usar tu conocimiento general para expandir la búsqueda en la cláusula WHERE usando OR
         4. USA OPTIONAL MATCH para las relaciones. Si el nodo tiene el ranking como propiedad interna pero no tiene relaciones, no queremos perder esa información.
         5. EXTRAE TODO EL CONTEXTO: Necesito las propiedades internas del nodo (por si ahí están el ranking o los puntos), el tipo de relación, las propiedades de la relación y el nodo conectado.
 
@@ -87,12 +96,55 @@ class GraphQAService:
 
         return PromptTemplate(input_variables=["schema", "question"], template=template)
     
-    def process_question(self, question: str, client_id: str):
+    def _get_qa_prompt(self, company_name: str) -> PromptTemplate:
+        """
+        Genera el prompt de respuesta inyectando el contexto de la empresa del cliente.
+        """
+        template = f"""
+    Eres un asistente de atención al cliente en español.
+    ACTUALMENTE TRABAJAS PARA: {company_name}. Debes sonar como un empleado real de la marca.
+
+        OBJETIVO:
+    - Prioriza responder con la información del "Contexto extraído".
+    - Sonar cercano, profesional y orientado a ayudar como lo haría un vendedor experto de {company_name}.
+
+        REGLAS DE FIABILIDAD (ANTIALUCINACIONES):
+        1. DATOS DEL CLIENTE: No inventes datos específicos de {company_name}. Si algo no aparece en el contexto, dilo con claridad.
+        2. PRECISIÓN: Cuando haya datos en el contexto, usa valores exactos (nombres, números, relaciones) sin alterarlos.
+        3. CONTEXTO INSUFICIENTE: Si el contexto está vacío ([]) o no alcanza para responder con certeza sobre datos del cliente:
+              - Primero indícalo de forma natural y breve (ej: "Ahora mismo no veo ese dato concreto en la información disponible.").
+              - Después, en lugar de dar recomendaciones genéricas externas, haz una pregunta de clarificación útil para poder recomendar mejor dentro de {company_name}.
+                 Ejemplos de clarificación: uso principal (running/gym/casual), presupuesto aproximado, preferencias de comodidad/estilo, superficie de uso.
+              - Si decides dar orientación general, debe ser breve, práctica y siempre enfocada al catálogo de {company_name} (sin mencionar otras tiendas ni comercios externos).
+              - Nunca presentes orientación general como si fuera dato confirmado del cliente.
+        4. RESOLUCIÓN DE ENTIDADES: Si el usuario usa apodos o nombres abreviados y el contexto apunta claramente a una persona concreta, responde con seguridad usando el nombre completo.
+          5. PROHIBIDO INVENTAR PRODUCTOS: No inventes nombres de modelos, precios, stock o características concretas que no estén en el contexto.
+
+        REGLAS DE ESTILO:
+        1. No uses jerga técnica de bases de datos (nodo, grafo, relación, label, propiedad, etc.).
+        2. Tono humano, directo y profesional. Evita respuestas mecánicas o plantillas rígidas.
+    3. Si falta contexto, evita frases frías tipo "no tengo información" como única respuesta; combina transparencia + siguiente paso útil.
+    4. No recomiendes "mirar en minoristas", "otras tiendas" ni canales fuera de {company_name}.
+
+        Contexto extraído:
+        {{context}}
+
+        Pregunta del usuario:
+        {{question}}
+
+        Respuesta natural en español:
+        """
+
+        return PromptTemplate(input_variables=["context", "question"], template=template)
+    
+    def process_question(self, question: str, client_id: str, company_name: str):
         """
         Orquesta toda la magia:
         Pregunta -> LLM (Cypher) -> Neo4j (Datos) -> LLM (Respuesta final)
         Procesa la pregunta y devuelve la respuesta utilizando el grafo.
         """
+
+        question_limpia = quitar_tildes(question)
         if not self.graph: 
             return {"error": "No hay conexión con la base de datos de grafos"}
         
@@ -103,12 +155,13 @@ class GraphQAService:
                 qa_llm=self.qa_llm,     # Genera la respuesta final (hablada)
                 graph= self.graph,
                 cypher_prompt=self._get_cypher_prompt(client_id),
+                qa_prompt=self._get_qa_prompt(company_name),
                 allow_dangerous_requests=True,
                 verbose=True
             )
 
             #Ejecutar consulta
-            return chain.invoke({"query": question})
+            return chain.invoke({"query": question_limpia})
         
         except Exception as e:
             return {"error": str(e)}
