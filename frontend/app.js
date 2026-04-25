@@ -11,6 +11,88 @@
     url_portal: "",
   };
 
+  const WIDGET_STYLE_DEFAULTS = {
+    title: "Asistente",
+    welcome_message: "",
+    placeholder: "Escribe tu mensaje...",
+    send_label: "Enviar",
+    position: "right",
+    icon: "💬",
+    color_primary: "#00dfd8",
+    color_secondary: "#4f46e5",
+    color_panel: "#101026",
+    color_text: "#f8fafc",
+    color_input_bg: "#0d0f1f",
+    color_input_text: "#f8fafc",
+    color_input_border: "#2b2f43",
+    color_user_bubble_bg: "#00dfd8",
+    color_user_bubble_text: "#050510",
+    color_bot_bubble_bg: "#2b2f43",
+    color_bot_bubble_text: "#f8fafc",
+    panel_width: "420",
+    panel_height: "620",
+  };
+
+  function escapeHtml(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function buildWidgetSnippet(options, includeOptional = false) {
+    const origin = window.location.origin && window.location.origin !== "null"
+      ? window.location.origin
+      : "http://localhost:3000";
+    const scriptSrc = origin + "/widget/noctua-widget.js";
+
+    const attrs = [
+      ["data-api-base", options.apiBase],
+      ["data-client-id", options.clientId],
+      ["data-company-name", options.companyName],
+    ];
+
+    if (includeOptional) {
+      const defaults = options.widgetDefaults || WIDGET_STYLE_DEFAULTS;
+      const welcomeMessage = defaults.welcome_message && defaults.welcome_message.trim().length > 0
+        ? defaults.welcome_message
+        : `¡Hola! Soy el asistente de ${options.companyName}. ¿En qué te ayudo?`;
+      attrs.push(
+        ["data-title", defaults.title],
+        ["data-welcome-message", welcomeMessage],
+        ["data-placeholder", defaults.placeholder],
+        ["data-send-label", defaults.send_label],
+        ["data-position", defaults.position],
+        ["data-icon", defaults.icon],
+        ["data-color-primary", defaults.color_primary],
+        ["data-color-secondary", defaults.color_secondary],
+        ["data-color-panel", defaults.color_panel],
+        ["data-color-text", defaults.color_text],
+        ["data-color-input-bg", defaults.color_input_bg],
+        ["data-color-input-text", defaults.color_input_text],
+        ["data-color-input-border", defaults.color_input_border],
+        ["data-color-user-bubble-bg", defaults.color_user_bubble_bg],
+        ["data-color-user-bubble-text", defaults.color_user_bubble_text],
+        ["data-color-bot-bubble-bg", defaults.color_bot_bubble_bg],
+        ["data-color-bot-bubble-text", defaults.color_bot_bubble_text],
+        ["data-panel-width", defaults.panel_width],
+        ["data-panel-height", defaults.panel_height]
+      );
+    }
+
+    const attributesBlock = attrs
+      .map(function (pair) {
+        const key = pair[0];
+        const val = escapeHtml(pair[1]);
+        return `  ${key}=\"${val}\"`;
+      })
+      .join("\n");
+
+    return `<script\n  src=\"${scriptSrc}\"\n${attributesBlock}\n  defer\n></script>`;
+  }
+
   function getPageFromUrl() {
     const params = new URLSearchParams(window.location.search);
     return params.get("page") || "inicio";
@@ -25,6 +107,7 @@
   function App() {
     const [page, setPage] = useState(getPageFromUrl());
     const [form, setForm] = useState(INITIAL_FORM);
+    const [createdClient, setCreatedClient] = useState(null);
     const [loading, setLoading] = useState(false);
     const [result, setResult] = useState(null);
 
@@ -57,7 +140,7 @@
       return loading ? "Generando conocimiento..." : "Desplegar asistente";
     }, [loading]);
 
-    function onChange(event) {
+    function onFormChange(event) {
       const name = event.target.name;
       const value = event.target.value;
       setForm(function (prev) {
@@ -80,6 +163,7 @@
           const errorText = payload?.detail ? (typeof payload.detail === "string" ? payload.detail : JSON.stringify(payload.detail)) : "Fallo al crear el asistente";
           throw new Error(errorText);
         }
+        setCreatedClient(payload);
         setResult({ type: "success", payload: payload });
         setForm(INITIAL_FORM);
         setTimeout(() => navigateTo("integracion"), 3000);
@@ -174,7 +258,7 @@
           "div",
           { className: "form-header" },
           h("h2", null, "Únete al futuro."),
-          h("p", null, "Ingresa tu web y crearemos tu grafo de conocimiento.")
+          h("p", null, "Ingresa tu web y generaremos tu chatbot. La personalizacion visual se hace luego en el script del widget.")
         ),
         h(
           "form",
@@ -182,11 +266,11 @@
           h(
             "label",
             null,
-            "Nombre de la Eempresa",
+            "Nombre de la empresa",
             h("input", {
               name: "company_name",
               value: form.company_name,
-              onChange: onChange,
+              onChange: onFormChange,
               required: true,
               placeholder: "Ej: VentaCorp SL"
             })
@@ -199,7 +283,7 @@
               type: "url",
               name: "url_portal",
               value: form.url_portal,
-              onChange: onChange,
+              onChange: onFormChange,
               required: true,
               placeholder: "https://tudominio.com"
             })
@@ -217,22 +301,55 @@
             "div",
             { className: "alert alert-" + result.type, style: { marginTop: "24px" } },
             result.type === "success"
-              ? "¡Exito! Asistente generado (Client ID: " + result.payload.id + "). Redirigiendo..."
+              ? "¡Exito! Asistente generado (Client ID: " + result.payload.id + "). Redirigiendo a la integracion..."
               : "Error: " + result.message
           )
       );
     }
 
     function renderIntegracion() {
-      const scriptCode = "<script>\n  window.NOCTUA_CLIENT_ID = \"TU_CLIENT_ID\";\n</script>\n<script src=\"http://localhost:5500/widget/noctua-widget.js\" defer></script>";
+      const currentClientId = createdClient?.id || "TU_CLIENT_ID";
+      const currentCompanyName = createdClient?.company_name || form.company_name || "Tu empresa";
+      const minimalScriptCode = buildWidgetSnippet({
+        apiBase: API_BASE_URL,
+        clientId: currentClientId,
+        companyName: currentCompanyName,
+      });
+
+      const advancedScriptCode = buildWidgetSnippet(
+        {
+          apiBase: API_BASE_URL,
+          clientId: currentClientId,
+          companyName: currentCompanyName,
+          widgetDefaults: WIDGET_STYLE_DEFAULTS,
+        },
+        true
+      );
     
       return h(
         "div",
         { className: "animate-enter section", style: { maxWidth: "800px", margin: "0 auto" } },
         h("div", { className: "hero", style: { padding: "40px 20px" } },
           h("h1", { style: { fontSize: "2.5rem" } }, "Despliegue rápido."),
-          h("p", null, "Copia el siguiente fragmento de código Justo antes de cerrar la etiqueta </body> en tu web.")
+          h("p", null, "Copia el snippet minimo para integrar. Si quieres personalizar, usa el snippet avanzado editando atributos data-... en tu HTML.")
         ),
+        h(
+          "div",
+          {
+            style: {
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "12px",
+              padding: "14px",
+              color: "var(--text-secondary)",
+              background: "rgba(255,255,255,0.02)",
+              marginBottom: "16px",
+              fontSize: "0.9rem",
+            }
+          },
+          h("strong", { style: { color: "var(--text-primary)" } }, "Client ID activo: "),
+          currentClientId
+        ),
+        h("h3", { style: { fontSize: "1.15rem", marginBottom: "8px" } }, "Snippet minimo (recomendado)"),
         h(
           "div",
           { className: "code-window" },
@@ -244,15 +361,43 @@
           h("pre", { className: "code" }, 
             h("code", null, 
               h("span", { style: { opacity: 0.5 }}, "<!-- Inserte en su HTML -->\n"),
-              h("span", { className: "code-highlight" }, scriptCode)
+              h("span", { className: "code-highlight" }, minimalScriptCode)
             )
           )
         ),
         h("div", { style: { textAlign: "center", marginTop: "32px"} },
           h("button", { className: "btn btn-ghost", onClick: () => {
-            navigator.clipboard.writeText(scriptCode);
-            alert("Código copiado al portapapeles");
-          }}, "Copiar al portapapeles")
+            navigator.clipboard.writeText(minimalScriptCode)
+              .then(() => alert("Codigo copiado al portapapeles"))
+              .catch(() => alert("No se pudo copiar automaticamente. Copialo manualmente."));
+          }}, "Copiar snippet minimo")
+        ),
+        h("h3", { style: { fontSize: "1.15rem", marginTop: "28px", marginBottom: "8px" } }, "Snippet avanzado (personalizable)"),
+        h(
+          "p",
+          { style: { color: "var(--text-secondary)", marginBottom: "10px" } },
+          "Modifica colores, textos, icono, posicion y tamaño del panel directamente en los atributos del script."
+        ),
+        h(
+          "div",
+          { className: "code-window" },
+          h("div", { className: "code-header" },
+            h("div", { className: "code-dot dot-red" }),
+            h("div", { className: "code-dot dot-yellow" }),
+            h("div", { className: "code-dot dot-green" })
+          ),
+          h("pre", { className: "code" },
+            h("code", null,
+              h("span", { className: "code-highlight" }, advancedScriptCode)
+            )
+          )
+        ),
+        h("div", { style: { textAlign: "center", marginTop: "18px" } },
+          h("button", { className: "btn btn-ghost", onClick: () => {
+            navigator.clipboard.writeText(advancedScriptCode)
+              .then(() => alert("Snippet avanzado copiado al portapapeles"))
+              .catch(() => alert("No se pudo copiar automaticamente. Copialo manualmente."));
+          }}, "Copiar snippet avanzado")
         )
       );
     }
@@ -260,19 +405,18 @@
     function renderDemo() {
       useEffect(function() {
         if (!document.getElementById("noctua-demo-script")) {
-          const s1 = document.createElement("script");
-          s1.innerHTML = "window.NOCTUA_CLIENT_ID = 'demo_noctua'; window.NOCTUA_COMPANY_NAME = 'Noctua'; window.NOCTUA_TITLE = 'Asistente Noctua'; window.NOCTUA_COLOR = '#00dfd8';";
-          s1.id = "noctua-demo-config";
-          document.body.appendChild(s1);
-          
           const s2 = document.createElement("script");
           s2.src = "./widget/noctua-widget.js"; 
           s2.id = "noctua-demo-script";
           s2.dataset.apiBase = API_BASE_URL;
-          s2.dataset.clientId = "ba6c6b9e-aab1-4617-bb96-d6d65ad37b73"
+          s2.dataset.clientId = "ba6c6b9e-aab1-4617-bb96-d6d65ad37b73";
           s2.dataset.companyName = "Noctua";
           s2.dataset.title = "Noctua AI TFG Demo";
-          s2.dataset.color = "#00dfd8";
+          s2.dataset.colorPrimary = "#00dfd8";
+          s2.dataset.colorSecondary = "#4f46e5";
+          s2.dataset.panelWidth = "460";
+          s2.dataset.panelHeight = "600";
+          s2.dataset.welcomeMessage = "¡Hola! Soy Noctua. Puedes preguntarme sobre el proyecto.";
 
           document.body.appendChild(s2);
         }
@@ -288,7 +432,6 @@
         h(
           "div",
           { className: "bento-card", style: { textAlign: "left", margin: "0 auto", maxWidth: "600px" } },
-          h("div", { className: "feature-icon" }, "👀"),
           h("h3", null, "Prueba el Chatbot"),
           h("p", null, "El widget ahora mismo conoce el contexto de Noctua, GraphRAG y sus características. Puedes hacerle preguntas como:"),
           h("ul", { style: { paddingLeft: "24px", paddingTop: "12px", color: "var(--text-secondary)", display: "flex", flexDirection: "column", gap: "8px" } },
