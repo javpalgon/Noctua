@@ -1,5 +1,5 @@
 (() => {
-  const script = document.currentScript;
+  let script = document.currentScript || document.getElementById('noctua-demo-script') || document.querySelector("script[src*='noctua-widget']");
   if (!script) return;
 
   const apiBase = script.dataset.apiBase || "http://localhost:8000";

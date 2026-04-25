@@ -1,5 +1,5 @@
 import asyncio
-from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, BFSDeepCrawlStrategy
+from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, BFSDeepCrawlStrategy, BrowserConfig
 from app.schemas.client import ClientConfig
 from app.services.knowledge_graph_builder import KnowledgeGraphBuilder
 from pathlib import Path
@@ -12,6 +12,8 @@ load_dotenv()
 # Configuración
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "zephyr:latest")
+KG_CHUNK_SIZE = int(os.getenv("KG_CHUNK_SIZE", "1500"))
+KG_CHUNK_OVERLAP = int(os.getenv("KG_CHUNK_OVERLAP", "150"))
 KG_MAX_CHUNKS = int(os.getenv("KG_MAX_CHUNKS", "20"))
 OUTPUT_DIR = Path("./knowledge_graphs")
 SAVE_TO_NEO4J = os.getenv("NEO4J_URI") is not None  # Auto-detectar si usar Neo4j
@@ -26,10 +28,10 @@ def limpiar_markdown(texto: str) -> str:
         if not linea_strip:
             continue
 
-        #Saltar lineas con muchos links
-        num_links = len(re.findall(r'\[.*?\]\(.*?\)', linea_strip))
-        if num_links > 3:
-            continue
+        # #Saltar lineas con muchos links
+        # num_links = len(re.findall(r'\[.*?\]\(.*?\)', linea_strip))
+        # if num_links > 3:
+        #     continue
 
         # Saltar líneas que parecen footers/legales
         palabras_footer = ["cookie", "privacy", "©", "copyright", "terms of", "política de"]
@@ -38,6 +40,16 @@ def limpiar_markdown(texto: str) -> str:
 
         #Saltar separadores markdown
         if linea_strip.startswith("---") or linea_strip.startswith("==="):
+            continue
+
+        # Saltar lineas de URL/rutas para evitar nodos de infraestructura
+        if re.search(r"https?://|www\\.", linea_strip.lower()):
+            continue
+        if re.match(r"^[./\\\\].+", linea_strip):
+            continue
+
+        # Saltar bloques tecnicos frecuentes en documentacion
+        if "<script" in linea_strip.lower() or "</script>" in linea_strip.lower():
             continue
 
         lineas_limpias.append(linea_strip)
@@ -58,17 +70,19 @@ async def rastreo_web(cliente: ClientConfig, save_to_neo4j: bool = True):
     print(f"[RASTREO] URL: {cliente.url_portal}")
     print(f"{'='*50}\n")
 
-    # crawl_strategy = BFSDeepCrawlStrategy(max_depth=1)
+    crawl_strategy = BFSDeepCrawlStrategy(max_depth=2)
     configuration = CrawlerRunConfig(
         exclude_external_links=True, 
         exclude_all_images=True, 
-        # deep_crawl_strategy=crawl_strategy,
-        excluded_tags=["nav", "footer", "aside", "header", "script", "style"],
+        deep_crawl_strategy=crawl_strategy,
+        excluded_tags=["footer", "aside", "header", "script", "style"],
         word_count_threshold=15,
         verbose=True
     )
 
-    async with AsyncWebCrawler() as crawler:
+    browser_config = BrowserConfig(ignore_https_errors=True)
+
+    async with AsyncWebCrawler(config=browser_config) as crawler:
         results = await crawler.arun(url=str(cliente.url_portal), config=configuration)
 
         # Concatenar todo el markdown de las páginas rastreadas
@@ -77,8 +91,8 @@ async def rastreo_web(cliente: ClientConfig, save_to_neo4j: bool = True):
 
         for pagina in results:
             if pagina.success:
-                header = f"\n\n# Página: {pagina.url}\n\n"
-                markdown_completo += header + pagina.markdown
+                # Evitamos inyectar la URL como texto para no contaminar el extractor
+                markdown_completo += "\n\n" + pagina.markdown
                 paginas_exitosas += 1
             else:
                 print(f"[RASTREO] ❌ Error al rastrear {pagina.url}: {pagina.error_message}")
@@ -99,7 +113,8 @@ async def rastreo_web(cliente: ClientConfig, save_to_neo4j: bool = True):
             kg = KnowledgeGraphBuilder(
                 model=OLLAMA_MODEL, 
                 ollama_url=OLLAMA_URL,
-                chunk_size=1500,
+                chunk_size=KG_CHUNK_SIZE,
+                chunk_overlap=KG_CHUNK_OVERLAP,
                 max_chunks=KG_MAX_CHUNKS
             )
             markdown_limpio = limpiar_markdown(markdown_completo)

@@ -7,6 +7,7 @@ import json
 import requests
 from typing import List, Dict, Any, Optional
 from pathlib import Path
+import re
 import networkx as nx
 from pyvis.network import Network
 from neo4j import GraphDatabase
@@ -46,20 +47,45 @@ Correct Output:
 
 GENERAL RULES:
 - Extract REAL concepts, entities, people, places, metrics, or organizations.
+- Use ONLY information explicitly present in the text chunk. Never add external knowledge.
 - Each relationship must connect two different concepts.
 - The "edge" field must be a short, clear verb or descriptive phrase.
+- Do NOT create entities from URLs, file paths, repository paths, script tags, or technical boilerplate.
 - Output ONLY a valid JSON array of objects with keys "node_1", "node_2", and "edge". Do not add markdown, explanations, or text outside the JSON.
 """
+
+    NOISE_EDGES = {
+        "with",
+        "have",
+        "has",
+        "in terms of",
+        "is file",
+        "contains file",
+        "hosts repository",
+        "is repository",
+        "has file",
+        "has content",
+    }
+
+    NOISE_NODES = {
+        "github",
+        "readme.md",
+        "readme",
+        "blob",
+        "main",
+    }
 
     def __init__(
         self,
         model: str = "zephyr:latest",
         ollama_url: str = "http://localhost:11434",
         chunk_size: int = 1500,
+        chunk_overlap: int = 150,
         max_chunks: Optional[int] = None,
     ):
         self.model = model
-        self.chunk_size = chunk_size
+        self.chunk_size = max(300, chunk_size)
+        self.chunk_overlap = max(0, min(chunk_overlap, self.chunk_size - 1))
         self.max_chunks = max_chunks
         self.client = OllamaClient(ollama_url)
 
@@ -71,18 +97,89 @@ GENERAL RULES:
         if not isinstance(value, str):
             value = str(value)
         return value.lower().strip()
+
+    @staticmethod
+    def _find_split_end(text: str, start: int, max_end: int, min_end: int) -> int:
+        """Busca un punto natural de corte para evitar partir palabras/frases a mitad."""
+        if max_end >= len(text):
+            return len(text)
+
+        delimiters = ["\n\n", ". ", "! ", "? ", "\n", "; ", ": ", " "]
+        best = -1
+        for delimiter in delimiters:
+            pos = text.rfind(delimiter, min_end, max_end)
+            if pos != -1 and pos > best:
+                best = pos + len(delimiter)
+
+        if best <= start:
+            return max_end
+        return best
     
     def _split_text(self, text: str) -> List[str]:
         chunks, start = [], 0
         text = text.strip()
-        while start < len(text):
-            chunks.append(text[start:start + self.chunk_size])
-            start += self.chunk_size - 150  # solapamiento de 150 caracteres para contexto
+        if not text:
+            return [text]
+
+        text_len = len(text)
+        stride = max(1, self.chunk_size - self.chunk_overlap)
+
+        while start < text_len:
+            max_end = min(start + self.chunk_size, text_len)
+            min_end = min(max_end, start + int(self.chunk_size * 0.65))
+            end = self._find_split_end(text, start, max_end, min_end)
+
+            if end <= start:
+                end = max_end
+
+            chunk = text[start:end]
+            if chunk:
+                chunks.append(chunk)
+
+            if end >= text_len:
+                break
+
+            next_start = max(0, end - self.chunk_overlap)
+
+            # Ajuste fino para que el siguiente chunk no empiece en mitad de palabra.
+            if next_start > 0 and next_start < text_len and not text[next_start].isspace():
+                back = text.rfind(" ", max(0, next_start - 40), next_start)
+                if back != -1 and back > start:
+                    next_start = back + 1
+
+            if next_start <= start:
+                next_start = min(start + stride, text_len)
+
+            start = next_start
+
         if not chunks:
             return [text]
         if self.max_chunks is not None and self.max_chunks > 0:
             return chunks[: self.max_chunks]
         return chunks
+
+    @staticmethod
+    def _is_noise_node(value: str) -> bool:
+        if not value:
+            return True
+        if value in KnowledgeGraphBuilder.NOISE_NODES:
+            return True
+        if value.startswith("http://") or value.startswith("https://") or value.startswith("www."):
+            return True
+        if re.match(r"^[./\\\\].+", value):
+            return True
+        if re.search(r"\\.(md|txt|html|js|py|json)$", value):
+            return True
+        if "<script" in value or "</script>" in value:
+            return True
+        return False
+
+    @staticmethod
+    def _is_noise_edge(value: str) -> bool:
+        if not value:
+            return True
+        compact = value.replace(";", " ").strip()
+        return compact in KnowledgeGraphBuilder.NOISE_EDGES
     
     def _extract_from_chunk(self, chunk: str) -> List[Dict]:
         prompt = f"Extract the knowledge graph from this text:\n\n{chunk}\n\nJSON output:"
@@ -141,13 +238,19 @@ GENERAL RULES:
         # chunks = chunks[:5] if len(chunks) > 5 else chunks
 
         for i, chunk in enumerate(chunks):
-            print(f"Extrayendo el fragmento {i+1}/{len(chunks)}...")
-            preview = chunk[:600].replace("\n", " ")
-            print(f"Chunk extraído (preview): {preview}")
+            print(f"Extrayendo el fragmento {i+1}/{len(chunks)} (longitud={len(chunk)})...")
+            preview_start = chunk[:350].replace("\n", " ")
+            preview_end = chunk[-220:].replace("\n", " ") if len(chunk) > 220 else preview_start
+            print(f"Chunk inicio (preview): {preview_start}")
+            print(f"Chunk final (preview): {preview_end}")
             for rel in self._extract_from_chunk(chunk):
                 rel["node_1"] = self._normalize_text(rel.get("node_1", ""))
                 rel["node_2"] = self._normalize_text(rel.get("node_2", ""))
                 rel["edge"] = self._normalize_text(rel.get("edge", "related")) or "related"
+                if self._is_noise_node(rel["node_1"]) or self._is_noise_node(rel["node_2"]):
+                    continue
+                if self._is_noise_edge(rel["edge"]):
+                    continue
                 if rel["node_1"] and rel["node_2"] and rel["node_1"] != rel["node_2"]:
                     all_relations.append(rel)
         

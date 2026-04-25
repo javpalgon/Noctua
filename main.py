@@ -1,5 +1,6 @@
 import asyncio
 import httpx
+import os
 from fastapi import FastAPI, Depends,  HTTPException, BackgroundTasks    
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl
@@ -19,13 +20,9 @@ app = FastAPI(title="Noctua - Plataforma de Grafos de Conocimiento")
 # CORS para pruebas locales del widget (frontend en otro puerto)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5500",
-        "http://127.0.0.1:5500",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
-    allow_credentials=True,
+    # Permite embeber el widget desde cualquier dominio.
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -56,21 +53,106 @@ class SessionEndRequest(BaseModel):
     client_id: str
     session_id: str
 
+VALIDATION_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
+}
+
+ALLOW_INSECURE_TLS_FALLBACK = os.getenv("ALLOW_INSECURE_TLS_FALLBACK", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+
+def _validar_status_url(response: httpx.Response):
+    """Normaliza validacion de status HTTP de la URL del cliente."""
+    status = response.status_code
+    if status < 400:
+        return
+    if status == 404:
+        raise HTTPException(status_code=422, detail="La URL no existe (404)")
+    if status in (401, 403):
+        raise HTTPException(status_code=422, detail="La URL requiere autenticación o está bloqueada (401/403)")
+    if status >= 500:
+        raise HTTPException(status_code=422, detail="Error del servidor de la URL o caída temporal")
+    raise HTTPException(status_code=422, detail=f"La URL devolvió un estado no válido ({status})")
+
+
+def _es_error_certificado_tls(exc: Exception) -> bool:
+    """Detecta errores típicos de certificado/cadena TLS inválida."""
+    textos = []
+    current: Exception | None = exc
+    for _ in range(6):
+        if current is None:
+            break
+        textos.append(f"{type(current).__name__}: {current}".lower())
+        siguiente = current.__cause__ or current.__context__
+        if isinstance(siguiente, BaseException):
+            current = siguiente  # type: ignore[assignment]
+        else:
+            break
+
+    joined = " | ".join(textos)
+    patrones_tls = (
+        "certificate verify failed",
+        "unable to get local issuer certificate",
+        "self signed certificate",
+        "hostname mismatch",
+        "ssl",
+        "tls",
+    )
+    return any(p in joined for p in patrones_tls)
+
+
+async def _hacer_peticion_validacion(target: str, verify_tls: bool) -> httpx.Response:
+    async with httpx.AsyncClient(
+        timeout=10,
+        follow_redirects=True,
+        headers=VALIDATION_HEADERS,
+        verify=verify_tls,
+    ) as client:
+        try:
+            response = await client.head(target)
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError):
+            # Algunos servidores cortan HEAD sin enviar respuesta completa.
+            response = await client.get(target)
+        else:
+            # Si HEAD no está soportado, reintentamos con GET.
+            if response.status_code in (405, 501):
+                response = await client.get(target)
+    return response
+
 async def validar_url(url: HttpUrl):
-    """Valida que la URL existe haciendo una petición HTTP HEAD."""
+    """Valida que la URL existe con fallback HEAD -> GET para servidores no estándar."""
+    target = str(url)
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-            response = await client.head(str(url))
-        if response.status_code == 404:
-            raise HTTPException(status_code=422, detail="La URL no existe (404)")
-        elif response.status_code in (401,403):
-            raise HTTPException(status_code=422, detail="La URL requiere autenticación o está bloqueada (401/403)")
-        elif response.status_code >= 500:
-            raise HTTPException(status_code=422, detail="Error del servidor de la URL está caído temporalmente")
-    except httpx.ConnectError:
+        try:
+            response = await _hacer_peticion_validacion(target, verify_tls=True)
+        except httpx.ConnectError as e:
+            # Fallback opcional para sitios con cadena TLS mal configurada.
+            if ALLOW_INSECURE_TLS_FALLBACK and _es_error_certificado_tls(e):
+                response = await _hacer_peticion_validacion(target, verify_tls=False)
+            else:
+                raise
+
+        _validar_status_url(response)
+    except HTTPException:
+        raise
+    except httpx.ConnectError as e:
+        if _es_error_certificado_tls(e):
+            raise HTTPException(
+                status_code=422,
+                detail="No se pudo validar TLS de la URL (certificado inválido o cadena incompleta)",
+            )
         raise HTTPException(status_code=422, detail="No se pudo conectar a la URL")
     except httpx.TimeoutException:
         raise HTTPException(status_code=422, detail="La URL superó el timeout")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=422, detail=f"Error de red validando la URL: {type(e).__name__}")
     
 def generar_grafo_segundo_plano(cliente_id: str, company_name: str, url_portal: HttpUrl):
     """Función que se ejecuta en segundo plano para generar el grafo de conocimiento."""
@@ -86,19 +168,19 @@ def build_contextual_question(history: list, question: str, max_turns: int = 6) 
     Convierte historial en contexto textual breve.
     history = lista de ChatMessage
     """
-    # Cogemos últimos mensajes para no inflar tokens
-    window = history[-max_turns:]
-    if not window:
+    # Solo reutilizamos las ultimas preguntas del usuario para no contaminar
+    # la recuperacion con respuestas previas del asistente.
+    user_turns = [m.content for m in history if m.role == "user"][-max_turns:]
+    if not user_turns:
         return question
 
     lines = []
-    for m in window:
-        prefix = "Usuario" if m.role == "user" else "Asistente"
-        lines.append(f"{prefix}: {m.content}")
+    for user_msg in user_turns:
+        lines.append(f"Usuario: {user_msg}")
 
     history_block = "\n".join(lines)
     return (
-        "Contexto de conversación (sesión actual):\n"
+        "Contexto breve de preguntas previas del usuario:\n"
         f"{history_block}\n\n"
         f"Pregunta actual del usuario: {question}"
     )

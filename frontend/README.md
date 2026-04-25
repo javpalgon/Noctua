@@ -8,11 +8,12 @@ Este frontend usa:
 
 ## Ejecutar en local
 
-Desde la raíz del proyecto:
+Este proyecto se ejecuta con `npm`, pero **sin Vite** y **sin JSX**.
 
 ```bash
 cd /home/javi/Escritorio/TFG/Noctua/frontend
-python3 -m http.server 3000
+npm install
+npm run dev
 ```
 
 Abrir en navegador:
@@ -32,3 +33,10 @@ Edita en `index.html`:
 ```
 
 Asegúrate de tener levantada la API de FastAPI en ese host/puerto y CORS habilitado para `http://localhost:3000`.
+
+## Estado del proyecto (importante)
+
+- ✅ Sin archivos `.jsx`
+- ✅ Sin `vite.config.js`
+- ✅ React cargado por CDN en `index.html`
+- ✅ Lógica principal en `app.js` usando `React.createElement`

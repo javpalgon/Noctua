@@ -217,7 +217,7 @@
             "div",
             { className: "alert alert-" + result.type, style: { marginTop: "24px" } },
             result.type === "success"
-              ? "¡Exito! Asistente generado (Client ID: " + result.payload.client_id + "). Redirigiendo..."
+              ? "¡Exito! Asistente generado (Client ID: " + result.payload.id + "). Redirigiendo..."
               : "Error: " + result.message
           )
       );
@@ -266,11 +266,11 @@
           document.body.appendChild(s1);
           
           const s2 = document.createElement("script");
-          s2.src = "../widget/noctua-widget.js"; 
+          s2.src = "./widget/noctua-widget.js"; 
           s2.id = "noctua-demo-script";
           s2.dataset.apiBase = API_BASE_URL;
-          s2.dataset.clientId = "demo_noctua";
-          s2.dataset.companyName = "Proyecto Noctua TFG";
+          s2.dataset.clientId = "ba6c6b9e-aab1-4617-bb96-d6d65ad37b73"
+          s2.dataset.companyName = "Noctua";
           s2.dataset.title = "Noctua AI TFG Demo";
           s2.dataset.color = "#00dfd8";
 
