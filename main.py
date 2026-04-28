@@ -36,6 +36,7 @@ chat_store = create_chat_store()
 class ClienteCreate(BaseModel):
     company_name: str
     url_portal: HttpUrl
+    single_url: bool = False
 
 class ClienteOut(BaseModel):
     id: str
@@ -219,14 +220,20 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="Usuario no encontrado")
     return user
     
-def generar_grafo_segundo_plano(cliente_id: str, company_name: str, url_portal: HttpUrl):
+def generar_grafo_segundo_plano(
+    cliente_id: str,
+    company_name: str,
+    url_portal: HttpUrl,
+    single_url: bool = False,
+):
     """Función que se ejecuta en segundo plano para generar el grafo de conocimiento."""
     cliente_config = ClientConfig(
         company_name=company_name,
         url_portal=url_portal,
-        client_id=cliente_id
+        client_id=cliente_id,
+        single_url=single_url,
     )
-    asyncio.run(rastreo_web(cliente_config))
+    asyncio.run(rastreo_web(cliente_config, single_url=single_url))
 
 def build_contextual_question(history: list, question: str, max_turns: int = 6) -> str:
     """
@@ -327,7 +334,8 @@ async def create_cliente(
         generar_grafo_segundo_plano,
         cliente_id=nuevo_cliente.id,
         company_name=nuevo_cliente.company_name,
-        url_portal=nuevo_cliente.url_portal
+        url_portal=nuevo_cliente.url_portal,
+        single_url=cliente.single_url,
     )
 
     return {
@@ -344,6 +352,7 @@ async def refresh_cliente(
     background_tasks: BackgroundTasks,
     current_user: models_db.User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    single_url: bool = False,
 ):
     cliente = (
         db.query(models_db.Cliente)
@@ -363,11 +372,13 @@ async def refresh_cliente(
         cliente_id=cliente.id,
         company_name=cliente.company_name,
         url_portal=cliente.url_portal,
+        single_url=single_url,
     )
 
     return {
         "ok": True,
         "client_id": cliente.id,
+        "single_url": single_url,
         "message": "Actualización de grafo iniciada en segundo plano",
     }
 

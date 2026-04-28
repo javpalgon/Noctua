@@ -33,3 +33,4 @@ class ClientConfig(BaseModel):
     url_portal: HttpUrl
     client_id: Optional[str] = None
     api_key: Optional[str] = None
+    single_url: bool = False

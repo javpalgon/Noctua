@@ -12,6 +12,7 @@
   const INITIAL_FORM = {
     company_name: "",
     url_portal: "",
+    single_url: false,
   };
 
   const INITIAL_LOGIN_FORM = {
@@ -45,6 +46,10 @@
     panel_width: "420",
     panel_height: "620",
   };
+
+  function cloneWidgetDefaults() {
+    return Object.assign({}, WIDGET_STYLE_DEFAULTS);
+  }
 
   function escapeHtml(value) {
     return String(value || "")
@@ -172,6 +177,7 @@
     const [createdClient, setCreatedClient] = useState(null);
     const [loading, setLoading] = useState(false);
     const [result, setResult] = useState(null);
+    const [widgetConfig, setWidgetConfig] = useState(() => cloneWidgetDefaults());
 
     // Auth state — single source of truth
     const [user, setUser] = useState(() => {
@@ -189,6 +195,7 @@
     const [chatbotsLoading, setChatbotsLoading] = useState(false);
     const [chatbotsError, setChatbotsError] = useState("");
     const [refreshState, setRefreshState] = useState({});
+    const [refreshOptions, setRefreshOptions] = useState({});
 
     // Derived from user object — no separate userToken/userEmail state needed
     const userToken = user ? user.token : "";
@@ -227,6 +234,12 @@
       }
     }, [page, user]);
 
+    useEffect(function () {
+      if (page === "integracion") {
+        setWidgetConfig(cloneWidgetDefaults());
+      }
+    }, [page, result]);
+
     function navigateTo(nextPage) {
       // Soft Gating: protege registro y dashboard
       if ((nextPage === "dashboard" || nextPage === "registro") && !user) {
@@ -251,6 +264,7 @@
       setChatbots([]);
       setChatbotsError("");
       setRefreshState({});
+      setRefreshOptions({});
       setPostLoginRedirect(null);
       setPage("inicio");
       window.history.pushState({}, "", withPageInUrl("inicio"));
@@ -287,6 +301,12 @@
       const value = event.target.value;
       setSignupForm(function (prev) {
         return Object.assign({}, prev, { [name]: value });
+      });
+    }
+
+    function updateWidgetConfig(key, value) {
+      setWidgetConfig(function (prev) {
+        return Object.assign({}, prev, { [key]: value });
       });
     }
 
@@ -342,6 +362,12 @@
       });
     }
 
+    function setRefreshOption(botId, value) {
+      setRefreshOptions(function (prev) {
+        return Object.assign({}, prev, { [botId]: value });
+      });
+    }
+
     async function refreshGraph(bot) {
       if (!bot || !bot.id) return;
       const botId = bot.id;
@@ -350,9 +376,17 @@
         return;
       }
 
-      setRefreshStatus(botId, "loading", "Actualizando grafo...");
+      const singleUrl = !!refreshOptions[botId];
+
+      setRefreshStatus(
+        botId,
+        "loading",
+        singleUrl ? "Actualizando solo esta URL..." : "Actualizando grafo..."
+      );
       try {
-        const response = await fetch(API_BASE_URL + "/clientes/" + botId + "/refresh", {
+        const refreshUrl = API_BASE_URL + "/clientes/" + botId + "/refresh" +
+          (singleUrl ? "?single_url=true" : "");
+        const response = await fetch(refreshUrl, {
           method: "POST",
           headers: {
             Authorization: "Bearer " + userToken,
@@ -443,7 +477,9 @@
         setSignupForm(INITIAL_SIGNUP_FORM);
         const destination = postLoginRedirect || "dashboard";
         setPostLoginRedirect(null);
-        mapsTo(destination);
+        setPage(destination);
+        window.history.pushState({}, "", withPageInUrl(destination));
+        window.scrollTo(0, 0);
       } catch (error) {
         setAuthError(error?.message || "Error de registro");
       } finally {
@@ -471,7 +507,9 @@
         setLoginForm(INITIAL_LOGIN_FORM);
         const destination = postLoginRedirect || "dashboard";
         setPostLoginRedirect(null);
-        mapsTo(destination);
+        setPage(destination);
+        window.history.pushState({}, "", withPageInUrl(destination));
+        window.scrollTo(0, 0);
       } catch (error) {
         setAuthError(error?.message || "Error de login");
       } finally {
@@ -678,6 +716,23 @@
             onChange: (e) => setForm({ ...form, url_portal: e.target.value }),
             required: true
           })),
+          h("label", {
+            style: {
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+              fontSize: "0.9rem",
+              color: "var(--text-secondary)"
+            }
+          },
+          h("input", {
+            type: "checkbox",
+            checked: !!form.single_url,
+            onChange: (e) => setForm({ ...form, single_url: e.target.checked }),
+            style: { width: "18px", height: "18px" }
+          }),
+          "Crear solo con esta URL (sin subpaginas)"
+          ),
           h("button", { type: "submit", className: "btn btn-primary", disabled: loading },
             loading ? "Generando conocimiento..." : "Crear Chatbot"
           )
@@ -716,6 +771,7 @@
           chatbots.map(function (bot) {
             const refreshInfo = refreshState[bot.id];
             const isRefreshing = refreshInfo && refreshInfo.status === "loading";
+            const refreshSingleUrl = !!refreshOptions[bot.id];
             const statusColor = refreshInfo && refreshInfo.status === "error"
               ? "#ff5f56"
               : refreshInfo && refreshInfo.status === "success"
@@ -745,6 +801,26 @@
                   }
                 }, isRefreshing ? "Actualizando..." : "Actualizar grafo")
               ),
+              h("label", {
+                style: {
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  marginTop: "10px",
+                  fontSize: "0.8rem",
+                  color: "var(--text-secondary)"
+                }
+              },
+              h("input", {
+                type: "checkbox",
+                checked: refreshSingleUrl,
+                onChange: function (e) {
+                  setRefreshOption(bot.id, e.target.checked);
+                },
+                style: { width: "16px", height: "16px" }
+              }),
+              "Actualizar solo esta URL"
+              ),
               refreshInfo && h("p", {
                 style: {
                   color: statusColor,
@@ -772,7 +848,28 @@
       }
 
       const currentClientId = selectedClient.id || selectedClient.client_id || "TU_CLIENT_ID";
+      const companyName = selectedClient.company_name || "Tu empresa";
       const minimalScriptCode = `<script \n  src="${API_BASE_URL}/static/noctua-widget.js" \n  data-client-id="${currentClientId}"\n><\/script>`;
+      const advancedScriptCode = buildWidgetSnippet({
+        apiBase: API_BASE_URL,
+        clientId: currentClientId,
+        companyName: companyName,
+        widgetDefaults: widgetConfig,
+      }, true);
+
+      const colorFields = [
+        { key: "color_primary", label: "Color primario" },
+        { key: "color_secondary", label: "Color secundario" },
+        { key: "color_panel", label: "Fondo panel" },
+        { key: "color_text", label: "Texto panel" },
+        { key: "color_input_bg", label: "Fondo input" },
+        { key: "color_input_text", label: "Texto input" },
+        { key: "color_input_border", label: "Borde input" },
+        { key: "color_user_bubble_bg", label: "Burbuja usuario" },
+        { key: "color_user_bubble_text", label: "Texto usuario" },
+        { key: "color_bot_bubble_bg", label: "Burbuja bot" },
+        { key: "color_bot_bubble_text", label: "Texto bot" },
+      ];
 
       return h("div", { className: "container py-lg" },
         h("div", { className: "card" },
@@ -781,14 +878,114 @@
           h("div", { className: "code-window" },
             h("pre", { className: "code" }, h("code", null, minimalScriptCode))
           ),
-          h("button", {
-            className: "btn btn-primary",
-            style: { marginTop: "20px" },
-            onClick: () => {
-              navigator.clipboard.writeText(minimalScriptCode);
-              alert("Código copiado");
-            }
-          }, "Copiar Código")
+          h("div", { style: { display: "flex", gap: "12px", flexWrap: "wrap" } },
+            h("button", {
+              className: "btn btn-primary",
+              onClick: () => {
+                navigator.clipboard.writeText(minimalScriptCode);
+                alert("Código copiado");
+              }
+            }, "Copiar Código"),
+            h("button", {
+              className: "btn btn-ghost",
+              onClick: () => setWidgetConfig(cloneWidgetDefaults())
+            }, "Reset estilos")
+          ),
+
+          h("div", { style: { marginTop: "28px" } },
+            h("h3", null, "Personaliza el widget"),
+            h("p", { style: { color: "var(--text-secondary)", marginTop: "6px" } },
+              "Ajusta textos, posicion, icono, colores y tamano. El snippet avanzado se actualiza automaticamente."
+            )
+          ),
+
+          h("div", { className: "form", style: { marginTop: "18px" } },
+            h("label", null, "Titulo", h("input", {
+              value: widgetConfig.title,
+              onChange: (e) => updateWidgetConfig("title", e.target.value)
+            })),
+            h("label", null, "Mensaje de bienvenida", h("input", {
+              value: widgetConfig.welcome_message,
+              onChange: (e) => updateWidgetConfig("welcome_message", e.target.value),
+              placeholder: "Deja vacio para usar el mensaje por defecto"
+            })),
+            h("label", null, "Placeholder del input", h("input", {
+              value: widgetConfig.placeholder,
+              onChange: (e) => updateWidgetConfig("placeholder", e.target.value)
+            })),
+            h("label", null, "Texto del boton", h("input", {
+              value: widgetConfig.send_label,
+              onChange: (e) => updateWidgetConfig("send_label", e.target.value)
+            })),
+            h("label", null, "Posicion del launcher", h("select", {
+              value: widgetConfig.position,
+              onChange: (e) => updateWidgetConfig("position", e.target.value),
+              style: { padding: "14px 16px", borderRadius: "var(--radius-md)", background: "var(--bg-primary)", color: "var(--text-primary)", border: "1px solid var(--border-light)" }
+            },
+              h("option", { value: "right" }, "Derecha"),
+              h("option", { value: "left" }, "Izquierda")
+            )),
+            h("label", null, "Icono del launcher", h("input", {
+              value: widgetConfig.icon,
+              onChange: (e) => updateWidgetConfig("icon", e.target.value),
+              placeholder: "Ej: 💬"
+            })),
+            h("div", {
+              style: {
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                gap: "16px"
+              }
+            },
+              colorFields.map(function (field) {
+                return h("label", { key: field.key }, field.label, h("input", {
+                  type: "color",
+                  value: widgetConfig[field.key],
+                  onChange: (e) => updateWidgetConfig(field.key, e.target.value),
+                  style: { width: "100%", height: "44px", padding: "0", borderRadius: "var(--radius-md)", border: "1px solid var(--border-light)", background: "transparent" }
+                }));
+              })
+            ),
+            h("div", {
+              style: {
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                gap: "16px"
+              }
+            },
+              h("label", null, "Ancho del panel (px)", h("input", {
+                type: "number",
+                value: widgetConfig.panel_width,
+                onChange: (e) => updateWidgetConfig("panel_width", e.target.value),
+                min: 300,
+                max: 520
+              })),
+              h("label", null, "Alto del panel (px)", h("input", {
+                type: "number",
+                value: widgetConfig.panel_height,
+                onChange: (e) => updateWidgetConfig("panel_height", e.target.value),
+                min: 420,
+                max: 760
+              }))
+            )
+          ),
+
+          h("div", { style: { marginTop: "26px" } },
+            h("h3", null, "Snippet avanzado"),
+            h("p", { style: { color: "var(--text-secondary)", marginBottom: "12px" } },
+              "Copia este snippet si quieres mantener la configuracion personalizada."
+            ),
+            h("div", { className: "code-window" },
+              h("pre", { className: "code" }, h("code", null, advancedScriptCode))
+            ),
+            h("button", {
+              className: "btn btn-primary",
+              onClick: () => {
+                navigator.clipboard.writeText(advancedScriptCode);
+                alert("Snippet avanzado copiado");
+              }
+            }, "Copiar snippet avanzado")
+          )
         )
       );
     }

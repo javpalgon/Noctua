@@ -56,7 +56,7 @@ def limpiar_markdown(texto: str) -> str:
 
     return "\n".join(lineas_limpias)
 
-async def rastreo_web(cliente: ClientConfig, save_to_neo4j: bool = True):
+async def rastreo_web(cliente: ClientConfig, save_to_neo4j: bool = True, single_url: bool = False):
     """
     Rastrea la web del cliente y genera un grafo de conocimiento.
     
@@ -68,9 +68,12 @@ async def rastreo_web(cliente: ClientConfig, save_to_neo4j: bool = True):
     print(f"\n{'='*50}")
     print(f"[RASTREO] Iniciando rastreo web para {cliente.company_name}")
     print(f"[RASTREO] URL: {cliente.url_portal}")
+    modo_rastreo = "solo URL" if single_url else "rastreo profundo"
+    print(f"[RASTREO] Modo: {modo_rastreo}")
     print(f"{'='*50}\n")
 
-    crawl_strategy = BFSDeepCrawlStrategy(max_depth=2)
+    max_depth = 0 if single_url else 2
+    crawl_strategy = BFSDeepCrawlStrategy(max_depth=max_depth)
     configuration = CrawlerRunConfig(
         exclude_external_links=True, 
         exclude_all_images=True, 
