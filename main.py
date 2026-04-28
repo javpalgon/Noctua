@@ -11,7 +11,10 @@ from app.schemas.client import ClientConfig
 from app.services.schedule_knowledge import rastreo_web
 from app.services.graph_qa import GraphQAService
 from app.services.session_store_factory import create_chat_store
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 
 Base.metadata.create_all(bind=engine)
 
@@ -33,6 +36,25 @@ chat_store = create_chat_store()
 class ClienteCreate(BaseModel):
     company_name: str
     url_portal: HttpUrl
+
+class ClienteOut(BaseModel):
+    id: str
+    company_name: str
+    url_portal: str
+    created_at: datetime
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    email: str
 
 class ChatRequest(BaseModel):
     client_id: str
@@ -67,6 +89,13 @@ VALIDATION_HEADERS = {
 ALLOW_INSECURE_TLS_FALLBACK = os.getenv("ALLOW_INSECURE_TLS_FALLBACK", "true").lower() in {
     "1", "true", "yes", "on"
 }
+
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "noctua-dev-secret-change-in-prod")
+JWT_ALGORITHM = "HS256"
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+bearer_scheme = HTTPBearer(auto_error=True)
 
 def _validar_status_url(response: httpx.Response):
     """Normaliza validacion de status HTTP de la URL del cliente."""
@@ -153,6 +182,42 @@ async def validar_url(url: HttpUrl):
         raise HTTPException(status_code=422, detail="La URL superó el timeout")
     except httpx.RequestError as e:
         raise HTTPException(status_code=422, detail=f"Error de red validando la URL: {type(e).__name__}")
+
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def create_access_token(subject: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {
+        "sub": subject,
+        "exp": expire,
+    }
+    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+) -> models_db.User:
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Token inválido")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token inválido o expirado")
+
+    user = db.query(models_db.User).filter(models_db.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuario no encontrado")
+    return user
     
 def generar_grafo_segundo_plano(cliente_id: str, company_name: str, url_portal: HttpUrl):
     """Función que se ejecuta en segundo plano para generar el grafo de conocimiento."""
@@ -191,14 +256,67 @@ def build_contextual_question(history: list, question: str, max_turns: int = 6) 
 def read_root():
     return {"message": "Bienvenido a Noctua - Plataforma de Grafos de Conocimiento"}
 
+
+@app.post("/auth/register", response_model=AuthResponse)
+def register_user(payload: RegisterRequest, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
+
+    exists = db.query(models_db.User).filter(models_db.User.email == email).first()
+    if exists:
+        raise HTTPException(status_code=409, detail="Ya existe un usuario con ese email")
+
+    user = models_db.User(
+        email=email,
+        hashed_password=get_password_hash(payload.password),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    token = create_access_token(subject=user.id)
+    return AuthResponse(access_token=token, email=user.email)
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+def login_user(payload: LoginRequest, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+    user = db.query(models_db.User).filter(models_db.User.email == email).first()
+    if not user or not verify_password(payload.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+
+    token = create_access_token(subject=user.id)
+    return AuthResponse(access_token=token, email=user.email)
+
+
+@app.get("/me/chatbots", response_model=list[ClienteOut])
+def my_chatbots(
+    current_user: models_db.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    chatbots = (
+        db.query(models_db.Cliente)
+        .filter(models_db.Cliente.user_id == current_user.id)
+        .order_by(models_db.Cliente.created_at.desc())
+        .all()
+    )
+    return chatbots
+
 @app.post("/clientes")
-async def create_cliente(cliente: ClienteCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+async def create_cliente(
+    cliente: ClienteCreate,
+    background_tasks: BackgroundTasks,
+    current_user: models_db.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     
     await validar_url(cliente.url_portal)
     
     nuevo_cliente = models_db.Cliente(
         company_name=cliente.company_name,
-        url_portal=str(cliente.url_portal)
+        url_portal=str(cliente.url_portal),
+        user_id=current_user.id,
     )
 
     db.add(nuevo_cliente)
@@ -217,6 +335,40 @@ async def create_cliente(cliente: ClienteCreate, background_tasks: BackgroundTas
         "company_name": nuevo_cliente.company_name,
         "url_portal": nuevo_cliente.url_portal,
         "message": "Cliente creado y proceso de generación de grafo iniciado en segundo plano"
+    }
+
+
+@app.post("/clientes/{cliente_id}/refresh")
+async def refresh_cliente(
+    cliente_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: models_db.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    cliente = (
+        db.query(models_db.Cliente)
+        .filter(
+            models_db.Cliente.id == cliente_id,
+            models_db.Cliente.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+
+    await validar_url(cliente.url_portal)
+
+    background_tasks.add_task(
+        generar_grafo_segundo_plano,
+        cliente_id=cliente.id,
+        company_name=cliente.company_name,
+        url_portal=cliente.url_portal,
+    )
+
+    return {
+        "ok": True,
+        "client_id": cliente.id,
+        "message": "Actualización de grafo iniciada en segundo plano",
     }
 
 @app.post("/chat")

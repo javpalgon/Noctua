@@ -24,6 +24,7 @@ cssselect==1.4.0
 dataclasses-json==0.6.7
 decorator==5.2.1
 distro==1.9.0
+ecdsa==0.19.2
 exceptiongroup==1.3.1
 executing==2.2.1
 fake-http-header==0.3.5
@@ -92,6 +93,7 @@ orjson==3.11.7
 ormsgpack==1.12.2
 packaging==26.0
 parso==0.8.5
+passlib==1.7.4
 patchright==1.57.2
 pexpect==4.9.0
 pillow==12.1.0
@@ -102,6 +104,7 @@ psutil==7.2.2
 psycopg2-binary==2.9.11
 ptyprocess==0.7.0
 pure_eval==0.2.3
+pyasn1==0.6.3
 pycparser==3.0
 pydantic==2.12.5
 pydantic-settings==2.13.1
@@ -111,6 +114,7 @@ Pygments==2.19.2
 pyOpenSSL==25.3.0
 pypdf==6.9.1
 python-dotenv==1.2.1
+python-jose==3.5.0
 pytz==2025.2
 pyvis==0.3.2
 PyYAML==6.0.3
@@ -122,10 +126,12 @@ requests==2.32.5
 requests-toolbelt==1.0.0
 rich==14.3.1
 rpds-py==0.30.0
+rsa==4.9.1
 rtree==1.4.1
 scipy==1.15.3
 shapely==2.1.2
 shellingham==1.5.4
+six==1.17.0
 sniffio==1.3.1
 snowballstemmer==2.2.0
 soupsieve==2.8.3
