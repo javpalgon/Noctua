@@ -77,7 +77,7 @@ GENERAL RULES:
 
     def __init__(
         self,
-        model: str = "zephyr:latest",
+        model: str = "llama3.2",
         ollama_url: str = "http://localhost:11434",
         chunk_size: int = 1500,
         chunk_overlap: int = 150,

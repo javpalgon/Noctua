@@ -11,7 +11,7 @@ load_dotenv()
 
 # Configuración
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "zephyr:latest")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
 KG_CHUNK_SIZE = int(os.getenv("KG_CHUNK_SIZE", "1500"))
 KG_CHUNK_OVERLAP = int(os.getenv("KG_CHUNK_OVERLAP", "150"))
 KG_MAX_CHUNKS = int(os.getenv("KG_MAX_CHUNKS", "20"))
