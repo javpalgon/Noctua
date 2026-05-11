@@ -16,16 +16,24 @@ from dotenv import load_dotenv
 load_dotenv()  # Carga variables desde .env
 
 class OllamaClient:
-    def __init__(self, base_url: str = "http://localhost:11434"):
-        self.base_url = base_url
-    
-    def generate(self, model: str, prompt: str, system: str = None) -> str:
-        url = f"{self.base_url}/api/generate"
-        payload = {"model": model, "prompt": prompt, "system": system, "stream": False}
-        payload = {k: v for k, v in payload.items() if v is not None}
-        response = requests.post(url, json=payload, timeout=600)
+    def __init__(self, base_url: str = "http://localhost:11434", api_key: Optional[str] = None):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+
+    def chat(self, model: str, messages: list[dict], options: Optional[dict] = None) -> str:
+        if self.base_url.endswith("/api/chat"):
+            url = self.base_url
+        else:
+            url = f"{self.base_url}/api/chat"
+        payload = {"model": model, "messages": messages, "stream": False}
+        if options:
+            payload["options"] = options
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        response = requests.post(url, json=payload, headers=headers, timeout=600)
         response.raise_for_status()
-        return response.json().get("response", "")
+        return response.json().get("message", {}).get("content", "")
 
 
 class KnowledgeGraphBuilder:
@@ -77,8 +85,9 @@ GENERAL RULES:
 
     def __init__(
         self,
-        model: str = "llama3.2",
+        model: str = "llama3.2:3b",
         ollama_url: str = "http://localhost:11434",
+        api_key: Optional[str] = None,
         chunk_size: int = 1500,
         chunk_overlap: int = 150,
         max_chunks: Optional[int] = None,
@@ -87,7 +96,7 @@ GENERAL RULES:
         self.chunk_size = max(300, chunk_size)
         self.chunk_overlap = max(0, min(chunk_overlap, self.chunk_size - 1))
         self.max_chunks = max_chunks
-        self.client = OllamaClient(ollama_url)
+        self.client = OllamaClient(ollama_url, api_key=api_key)
 
     @staticmethod
     def _normalize_text(value: Any) -> str:
@@ -181,10 +190,14 @@ GENERAL RULES:
         compact = value.replace(";", " ").strip()
         return compact in KnowledgeGraphBuilder.NOISE_EDGES
     
-    def _extract_from_chunk(self, chunk: str) -> List[Dict]:
+    def _extract_from_chunk(self, chunk: str, source_url: Optional[str] = None) -> List[Dict]:
         prompt = f"Extract the knowledge graph from this text:\n\n{chunk}\n\nJSON output:"
         try:
-            response = self.client.generate(self.model, prompt, self.EXTRACTION_PROMPT).strip()
+            messages = [
+                {"role": "system", "content": self.EXTRACTION_PROMPT},
+                {"role": "user", "content": prompt},
+            ]
+            response = self.client.chat(self.model, messages).strip()
             if not response:
                 print("  ⚠️ Respuesta vacía del modelo")
                 return []
@@ -208,6 +221,8 @@ GENERAL RULES:
             valid = []
             for item in result:
                 if isinstance(item, dict) and "node_1" in item and "node_2" in item:
+                    if source_url:
+                        item["source_url"] = source_url
                     valid.append(item)
             
             if not valid:
@@ -228,12 +243,18 @@ GENERAL RULES:
             print(f"  ❌ Error inesperado extrayendo del chunk: {type(e).__name__}: {e}")
             return []
     
-    def build_from_text(self, text: str, verbose: bool = True) -> Dict[str, Any]:
+    def build_from_text(
+        self,
+        text: str,
+        verbose: bool = True,
+        source_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
         chunks = self._split_text(text)
         if verbose:
             print(f"📄 Procesando {len(chunks)} fragmentos...")
         
         all_relations = []
+        node_sources: Dict[str, set[str]] = {}
         # Línea para probar con 5 chunks
         # chunks = chunks[:5] if len(chunks) > 5 else chunks
 
@@ -243,7 +264,7 @@ GENERAL RULES:
             preview_end = chunk[-220:].replace("\n", " ") if len(chunk) > 220 else preview_start
             print(f"Chunk inicio (preview): {preview_start}")
             print(f"Chunk final (preview): {preview_end}")
-            for rel in self._extract_from_chunk(chunk):
+            for rel in self._extract_from_chunk(chunk, source_url=source_url):
                 rel["node_1"] = self._normalize_text(rel.get("node_1", ""))
                 rel["node_2"] = self._normalize_text(rel.get("node_2", ""))
                 rel["edge"] = self._normalize_text(rel.get("edge", "related")) or "related"
@@ -253,9 +274,13 @@ GENERAL RULES:
                     continue
                 if rel["node_1"] and rel["node_2"] and rel["node_1"] != rel["node_2"]:
                     all_relations.append(rel)
+                    rel_source = rel.get("source_url")
+                    if rel_source:
+                        node_sources.setdefault(rel["node_1"], set()).add(rel_source)
+                        node_sources.setdefault(rel["node_2"], set()).add(rel_source)
         
         if not all_relations:
-            return {"nodes": [], "edges": [], "networkx": None}
+            return {"nodes": [], "edges": [], "node_sources": {}, "networkx": None}
         
         # Agrupar relaciones
         edge_groups = {}
@@ -276,8 +301,17 @@ GENERAL RULES:
         
         if verbose:
             print(f"✅ Grafo: {len(nodes)} nodos, {len(edges)} relaciones")
-        
-        return {"nodes": nodes, "edges": edges, "networkx": G}
+
+        node_sources_out = {
+            node: sorted(urls) for node, urls in node_sources.items() if urls
+        }
+
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "node_sources": node_sources_out,
+            "networkx": G,
+        }
     
     def visualize(self, graph: Dict, output_path: str = "graph.html", open_browser: bool = True) -> Optional[str]:
         G = graph["networkx"]
@@ -348,6 +382,10 @@ GENERAL RULES:
                     "MATCH (c:Concept {client_id: $cid}) DETACH DELETE c",
                     cid=client_id,
                 )
+                session.run(
+                    "MATCH (s:Source {client_id: $cid}) DETACH DELETE s",
+                    cid=client_id,
+                )
 
                 # 2. Crear nodos
                 for node_name in graph["nodes"]:
@@ -375,6 +413,38 @@ GENERAL RULES:
                         label=edge.get("edge", "related"),
                         cid=client_id,
                     )
+
+                # 4. Crear fuentes y relaciones de trazabilidad
+                node_sources = graph.get("node_sources", {}) or {}
+                source_urls = set()
+                for urls in node_sources.values():
+                    for url in urls:
+                        if url:
+                            source_urls.add(url)
+
+                for url in source_urls:
+                    session.run(
+                        """
+                        MERGE (s:Source {url: $url, client_id: $cid})
+                        """,
+                        url=url,
+                        cid=client_id,
+                    )
+
+                for node_name, urls in node_sources.items():
+                    for url in urls:
+                        if not url:
+                            continue
+                        session.run(
+                            """
+                            MATCH (c:Concept {name: $name, client_id: $cid})
+                            MATCH (s:Source {url: $url, client_id: $cid})
+                            MERGE (c)-[:MENTIONED_IN]->(s)
+                            """,
+                            name=node_name,
+                            url=url,
+                            cid=client_id,
+                        )
 
             nodes_count = len(graph["nodes"])
             edges_count = len(graph["edges"])
@@ -419,7 +489,24 @@ GENERAL RULES:
                 G.add_edge(e["node_1"], e["node_2"], label=e["edge"])
 
             print(f"📥 Cargado desde Neo4j: {len(nodes)} nodos, {len(edges)} relaciones (client: {client_id})")
-            return {"nodes": nodes, "edges": edges, "networkx": G}
+            # Obtener fuentes asociadas
+            result = session.run(
+                """
+                MATCH (c:Concept {client_id: $cid})-[:MENTIONED_IN]->(s:Source {client_id: $cid})
+                RETURN c.name AS name, collect(distinct s.url) AS sources
+                """,
+                cid=client_id,
+            )
+            node_sources = {
+                record["name"]: record["sources"] for record in result
+            }
+
+            return {
+                "nodes": nodes,
+                "edges": edges,
+                "node_sources": node_sources,
+                "networkx": G,
+            }
 
         except Exception as e:
             print(f"❌ Error cargando desde Neo4j: {e}")
@@ -437,6 +524,10 @@ GENERAL RULES:
                     cid=client_id,
                 )
                 deleted = result.single()["deleted"]
+                session.run(
+                    "MATCH (s:Source {client_id: $cid}) DETACH DELETE s",
+                    cid=client_id,
+                )
                 print(f"🗑️  Eliminados {deleted} nodos del cliente '{client_id}' en Neo4j")
                 return True
         except Exception as e:

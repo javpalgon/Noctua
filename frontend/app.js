@@ -685,23 +685,7 @@
         ),
         h("form", {
           className: "form",
-          onSubmit: async (e) => {
-            e.preventDefault();
-            setLoading(true);
-            try {
-              const res = await fetch(`${API_BASE_URL}/clients/register`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(form)
-              });
-              const data = await res.json();
-              if (res.ok) {
-                setResult({ type: "success", payload: data });
-                navigateTo("integracion");
-              } else { alert(data.detail || "Error al registrar"); }
-            } catch (err) { alert("Error de conexión con el servidor"); }
-            setLoading(false);
-          }
+          onSubmit: onSubmit
         },
           h("label", null, "Nombre de la empresa", h("input", {
             placeholder: "Ej: Mi Negocio S.L.",

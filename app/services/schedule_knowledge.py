@@ -1,17 +1,26 @@
 import asyncio
-from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, BFSDeepCrawlStrategy, BrowserConfig
+from crawl4ai import (
+    AsyncWebCrawler,
+    CrawlerRunConfig,
+    BFSDeepCrawlStrategy,
+    BrowserConfig,
+    DomainFilter,
+    FilterChain,
+)
 from app.schemas.client import ClientConfig
 from app.services.knowledge_graph_builder import KnowledgeGraphBuilder
 from pathlib import Path
 from dotenv import load_dotenv
 import os
 import re
+from urllib.parse import urlparse
 
 load_dotenv()
 
 # Configuración
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
+LLAMUS_URL = os.getenv("LLAMUS_URL", "https://llamus.cs.us.es/ollama")
+LLAMUS_API_KEY = os.getenv("LLAMUS_API_KEY")
+LLAMUS_MODEL = os.getenv("LLAMUS_MODEL_EXTRACT", "llama3.2:3b")
 KG_CHUNK_SIZE = int(os.getenv("KG_CHUNK_SIZE", "1500"))
 KG_CHUNK_OVERLAP = int(os.getenv("KG_CHUNK_OVERLAP", "150"))
 KG_MAX_CHUNKS = int(os.getenv("KG_MAX_CHUNKS", "20"))
@@ -56,6 +65,15 @@ def limpiar_markdown(texto: str) -> str:
 
     return "\n".join(lineas_limpias)
 
+def _normalize_host(url: str) -> str:
+    try:
+        host = urlparse(url).netloc.lower().strip()
+    except ValueError:
+        return ""
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
 async def rastreo_web(cliente: ClientConfig, save_to_neo4j: bool = True, single_url: bool = False):
     """
     Rastrea la web del cliente y genera un grafo de conocimiento.
@@ -72,8 +90,18 @@ async def rastreo_web(cliente: ClientConfig, save_to_neo4j: bool = True, single_
     print(f"[RASTREO] Modo: {modo_rastreo}")
     print(f"{'='*50}\n")
 
+    expected_host = _normalize_host(str(cliente.url_portal))
+
     max_depth = 0 if single_url else 2
-    crawl_strategy = BFSDeepCrawlStrategy(max_depth=max_depth)
+    filter_chain = FilterChain(
+        [DomainFilter(allowed_domains=expected_host)]
+        if expected_host
+        else []
+    )
+    crawl_strategy = BFSDeepCrawlStrategy(
+        max_depth=max_depth,
+        filter_chain=filter_chain,
+    )
     configuration = CrawlerRunConfig(
         exclude_external_links=True, 
         exclude_all_images=True, 
@@ -88,40 +116,89 @@ async def rastreo_web(cliente: ClientConfig, save_to_neo4j: bool = True, single_
     async with AsyncWebCrawler(config=browser_config) as crawler:
         results = await crawler.arun(url=str(cliente.url_portal), config=configuration)
 
-        # Concatenar todo el markdown de las páginas rastreadas
-        markdown_completo = ""
-        paginas_exitosas = 0
-
-        for pagina in results:
-            if pagina.success:
-                # Evitamos inyectar la URL como texto para no contaminar el extractor
-                markdown_completo += "\n\n" + pagina.markdown
-                paginas_exitosas += 1
-            else:
-                print(f"[RASTREO] ❌ Error al rastrear {pagina.url}: {pagina.error_message}")
-
-        print(f"\n[RASTREO] ✅ Rastreadas {paginas_exitosas} páginas")
-        print(f"[RASTREO] 📄 Total de caracteres: {len(markdown_completo)}")
-
-        if not markdown_completo.strip():
-            print("[RASTREO] ❌ No se obtuvo contenido para procesar")
-            return None
-
-        # Construir el grafo de conocimiento
-        print(f"\n{'='*50}")
-        print(f"[KNOWLEDGE GRAPH] Generando grafo de conocimiento...")
-        print(f"{'='*50}\n")
-
         try:
             kg = KnowledgeGraphBuilder(
-                model=OLLAMA_MODEL, 
-                ollama_url=OLLAMA_URL,
+                model=LLAMUS_MODEL,
+                ollama_url=LLAMUS_URL,
+                api_key=LLAMUS_API_KEY,
                 chunk_size=KG_CHUNK_SIZE,
                 chunk_overlap=KG_CHUNK_OVERLAP,
-                max_chunks=KG_MAX_CHUNKS
+                max_chunks=KG_MAX_CHUNKS,
             )
-            markdown_limpio = limpiar_markdown(markdown_completo)
-            graph = kg.build_from_text(markdown_limpio, verbose=True)
+            paginas_exitosas = 0
+            paginas_excluidas_host = 0
+            total_chars = 0
+            combined_nodes = set()
+            edge_labels: dict[tuple[str, str], set[str]] = {}
+            node_sources: dict[str, set[str]] = {}
+
+            for pagina in results:
+                if pagina.success:
+                    page_host = _normalize_host(str(pagina.url))
+                    if expected_host and page_host and page_host != expected_host:
+                        paginas_excluidas_host += 1
+                        continue
+
+                    paginas_exitosas += 1
+                    total_chars += len(pagina.markdown or "")
+
+                    markdown_limpio = limpiar_markdown(pagina.markdown or "")
+                    if not markdown_limpio.strip():
+                        continue
+
+                    page_graph = kg.build_from_text(
+                        markdown_limpio,
+                        verbose=True,
+                        source_url=str(pagina.url),
+                    )
+
+                    combined_nodes.update(page_graph.get("nodes", []))
+
+                    for edge in page_graph.get("edges", []):
+                        key = tuple(sorted([edge["node_1"], edge["node_2"]]))
+                        labels = edge_labels.setdefault(key, set())
+                        for label in str(edge.get("edge", "")).split(";"):
+                            label = label.strip()
+                            if label:
+                                labels.add(label)
+
+                    for node, urls in (page_graph.get("node_sources", {}) or {}).items():
+                        if not urls:
+                            continue
+                        node_sources.setdefault(node, set()).update([u for u in urls if u])
+                else:
+                    print(f"[RASTREO] ❌ Error al rastrear {pagina.url}: {pagina.error_message}")
+
+            print(f"\n[RASTREO] ✅ Rastreadas {paginas_exitosas} páginas")
+            if paginas_excluidas_host:
+                print(f"[RASTREO] ⏭️  Excluidas por host: {paginas_excluidas_host}")
+            print(f"[RASTREO] 📄 Total de caracteres: {total_chars}")
+
+            if not combined_nodes:
+                print("[RASTREO] ❌ No se obtuvo contenido para procesar")
+                return None
+
+            # Construir el grafo de conocimiento
+            print(f"\n{'='*50}")
+            print(f"[KNOWLEDGE GRAPH] Generando grafo de conocimiento...")
+            print(f"{'='*50}\n")
+            edges = [
+                {
+                    "node_1": key[0],
+                    "node_2": key[1],
+                    "edge": "; ".join(sorted(labels)),
+                }
+                for key, labels in edge_labels.items()
+            ]
+
+            graph = {
+                "nodes": sorted(combined_nodes),
+                "edges": edges,
+                "node_sources": {
+                    node: sorted(urls) for node, urls in node_sources.items() if urls
+                },
+                "networkx": None,
+            }
 
             if not graph["nodes"]:
                 print("[KNOWLEDGE GRAPH] ⚠️ No se extrajeron conceptos del texto")

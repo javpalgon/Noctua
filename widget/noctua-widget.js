@@ -173,7 +173,7 @@
         flex: 1; overflow-y: auto; padding: 20px; background: transparent;
         display: flex; flex-direction: column; gap: 12px;
       }
-      .msg { max-width: 85%; padding: 14px 16px; border-radius: 16px; line-height: 1.5; font-size: 14px; }
+      .msg { max-width: 85%; padding: 14px 16px; border-radius: 16px; line-height: 1.5; font-size: 14px; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; }
       .user {
         margin-left: auto; 
         background: ${theme.userBubbleBg};

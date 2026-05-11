@@ -1,5 +1,5 @@
 from langchain_neo4j import Neo4jGraph, GraphCypherQAChain
-from langchain_groq import ChatGroq
+from langchain_ollama import ChatOllama
 # Para crear prompts personalizados
 from langchain_core.prompts import PromptTemplate
 import os
@@ -29,20 +29,30 @@ class GraphQAService:
         # self.ollama_url = os.getenv("OLLAMA_URL")
         # self.ollama_model = os.getenv("OLLAMA_MODEL")
 
-        self.groq_api_key = os.getenv("GROQ_API_KEY")
+        self.llamus_url = os.getenv("LLAMUS_URL", "https://llamus.cs.us.es/ollama")
+        self.llamus_api_key = os.getenv("LLAMUS_API_KEY")
+        self.llamus_model = os.getenv("LLAMUS_MODEL_CHAT", "llama3.3:70b")
+
+        headers = {}
+        if self.llamus_api_key:
+            headers["Authorization"] = f"Bearer {self.llamus_api_key}"
 
         # Programador de Cypher
-        self.llm = ChatGroq(
-            api_key=self.groq_api_key,
-            model="llama-3.3-70b-versatile",
-            temperature=0
+        self.llm = ChatOllama(
+            model=self.llamus_model,
+            base_url=self.llamus_url,
+            temperature=0,
+            validate_model_on_init=False,
+            client_kwargs={"headers": headers} if headers else None,
         )
 
         # El redactor de respuestas humanas
-        self.qa_llm = ChatGroq(
-            api_key=self.groq_api_key,
-            model="llama-3.3-70b-versatile",
-            temperature=0.3
+        self.qa_llm = ChatOllama(
+            model=self.llamus_model,
+            base_url=self.llamus_url,
+            temperature=0.3,
+            validate_model_on_init=False,
+            client_kwargs={"headers": headers} if headers else None,
         )
         try: 
             # Conexión al grafo
@@ -74,20 +84,25 @@ class GraphQAService:
             - type(r) AS tipo_relacion
             - properties(r) AS propiedades_relacion
             - asociado.name AS conectado_a
+            - fuentes AS fuentes
         4. Usa OPTIONAL MATCH para no perder contexto parcial.
+        5. Recupera fuentes con nodos :Source y relación :MENTIONED_IN, y construye una lista de URLs:
+            OPTIONAL MATCH (principal)-[:MENTIONED_IN]->(src:Source {{{{client_id: '{client_id}'}}}})
+            OPTIONAL MATCH (asociado)-[:MENTIONED_IN]->(src2:Source {{{{client_id: '{client_id}'}}}})
+            WITH principal, r, asociado, collect(distinct src.url) + collect(distinct src2.url) AS fuentes
 
         REGLAS DE RECUPERACION:
-        5. Si la pregunta es general (ej. "que es", "de que va", "resumen", "proyecto", "tecnologia"), haz una consulta panoramica del cliente sin asumir sector.
-        6. Si la pregunta contiene terminos concretos, usa WHERE flexible con OR sobre principal.name para esos terminos.
-        7. Si existe un nombre de empresa en la pregunta (por ejemplo "{company_name}"), prioriza tambien coincidencias por ese nombre.
-        8. No uses APOC ni funciones no estandar.
+        6. Si la pregunta es general (ej. "que es", "de que va", "resumen", "proyecto", "tecnologia"), haz una consulta panoramica del cliente sin asumir sector.
+        7. Si la pregunta contiene terminos concretos, usa WHERE flexible con OR sobre principal.name para esos terminos.
+        8. Si existe un nombre de empresa en la pregunta (por ejemplo "{company_name}"), prioriza tambien coincidencias por ese nombre.
+        9. No uses APOC ni funciones no estandar.
 
         REGLAS ANTI-ERRORES (MUY IMPORTANTE):
-        9. Evita comparaciones exactas sensibles a mayusculas/minusculas (NO uses principal.name = 'Noctua').
-        10. Para texto usa toLower(... ) CONTAINS toLower('termino').
-        11. No pongas un WHERE que filtre asociado justo despues de OPTIONAL MATCH si puede dejar filas nulas inutiles.
-        12. Cuando filtres por texto, aplica el WHERE sobre principal tras el MATCH principal.
-        13. No uses tokens de 1-2 caracteres para buscar por CONTAINS (ej. "ia"). Usa frases completas o terminos de 3+ caracteres.
+        10. Evita comparaciones exactas sensibles a mayusculas/minusculas (NO uses principal.name = 'Noctua').
+        11. Para texto usa toLower(... ) CONTAINS toLower('termino').
+        12. No pongas un WHERE que filtre asociado justo despues de OPTIONAL MATCH si puede dejar filas nulas inutiles.
+        13. Cuando filtres por texto, aplica el WHERE sobre principal tras el MATCH principal.
+        14. No uses tokens de 1-2 caracteres para buscar por CONTAINS (ej. "ia"). Usa frases completas o terminos de 3+ caracteres.
 
         Esquema de la base de datos:
         {{schema}}
@@ -122,14 +137,15 @@ class GraphQAService:
     1. Respuesta clara, breve y profesional.
     2. Sin jerga tecnica de bases de datos.
     3. Cuando haya datos en contexto, citalos de forma concreta en lenguaje natural.
-     4. Habla en voz directa para usuario final, no en modo "analista".
-     5. PROHIBIDO usar frases metadiscursivas como:
+    4. Si el contexto incluye una lista "fuentes" con URLs, traduce esas URLs a frases naturales como "segun su sitio web" o "en su portal oficial", y acompáñalas junto con la URL exacta
+    5. Habla en voz directa para usuario final, no en modo "analista".
+    6. PROHIBIDO usar frases metadiscursivas como:
          - "segun la informacion disponible"
          - "se menciona"
          - "en el contexto proporcionado"
          - "de acuerdo con la informacion"
          - "con la informacion proporcionada"
-     6. Si faltan datos, dilo natural y breve. Ejemplo: "Ahora mismo no tengo ese dato concreto."
+    7. Si faltan datos, dilo natural y breve. Ejemplo: "Ahora mismo no tengo ese dato concreto."
 
     Contexto extraido:
     {{context}}
@@ -240,14 +256,7 @@ class GraphQAService:
 
         return answer_text
 
-    def _get_seed_context(
-        self,
-        client_id: str,
-        company_name: str,
-        question: str | None = None,
-        limit: int = 40,
-        use_company_fallback: bool = True,
-    ):
+    def _get_seed_context(self,client_id: str,company_name: str,question: str | None = None,limit: int = 40,use_company_fallback: bool = True):
         """Contexto de respaldo generico para preguntas amplias o con poco resultado."""
         if not self.graph:
             return []
@@ -264,7 +273,9 @@ class GraphQAService:
         query_by_terms = """
         MATCH (principal:Concept {client_id: $cid})
         OPTIONAL MATCH (principal)-[r:RELATED_TO]-(asociado:Concept {client_id: $cid})
-        WITH principal, r, asociado
+        OPTIONAL MATCH (principal)-[:MENTIONED_IN]->(src:Source {client_id: $cid})
+        OPTIONAL MATCH (asociado)-[:MENTIONED_IN]->(src2:Source {client_id: $cid})
+        WITH principal, r, asociado, collect(distinct src.url) + collect(distinct src2.url) AS fuentes
         WHERE ANY(term IN $terms
               WHERE toLower(principal.name) CONTAINS term
                  OR toLower(coalesce(asociado.name, '')) CONTAINS term)
@@ -273,7 +284,8 @@ class GraphQAService:
             properties(principal) AS propiedades_entidad,
             type(r) AS tipo_relacion,
             properties(r) AS propiedades_relacion,
-            asociado.name AS conectado_a
+            asociado.name AS conectado_a,
+            fuentes AS fuentes
         LIMIT $row_limit
         """
 
@@ -284,12 +296,16 @@ class GraphQAService:
         ORDER BY grado DESC, principal.name ASC
         LIMIT $limit
         OPTIONAL MATCH (principal)-[r:RELATED_TO]-(asociado:Concept {client_id: $cid})
+        OPTIONAL MATCH (principal)-[:MENTIONED_IN]->(src:Source {client_id: $cid})
+        OPTIONAL MATCH (asociado)-[:MENTIONED_IN]->(src2:Source {client_id: $cid})
+        WITH principal, r, asociado, collect(distinct src.url) + collect(distinct src2.url) AS fuentes
         RETURN
             principal.name AS entidad,
             properties(principal) AS propiedades_entidad,
             type(r) AS tipo_relacion,
             properties(r) AS propiedades_relacion,
-            asociado.name AS conectado_a
+            asociado.name AS conectado_a,
+            fuentes AS fuentes
         LIMIT $row_limit
         """
 
