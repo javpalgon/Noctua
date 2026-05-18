@@ -174,6 +174,7 @@
         display: flex; flex-direction: column; gap: 12px;
       }
       .msg { max-width: 85%; padding: 14px 16px; border-radius: 16px; line-height: 1.5; font-size: 14px; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; }
+      .msg a { color: inherit; font-weight: 700; text-decoration: none; }
       .user {
         margin-left: auto; 
         background: ${theme.userBubbleBg};
@@ -232,10 +233,21 @@
   const sendBtn = shadow.getElementById("send");
   toggleBtn.textContent = theme.launcherIcon;
 
+  const linkify = (raw) => {
+    const escaped = escapeHtml(String(raw || ""));
+    const urlRegex = /(https?:\/\/[^\s)]+)/g;
+    return escaped.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+  };
+
   const addMessage = (text, role = "bot") => {
     const div = document.createElement("div");
     div.className = `msg ${role}`;
-    div.textContent = text;
+    if (role === "bot") {
+      div.innerHTML = linkify(text);
+    } else {
+      // user messages kept as textContent to avoid injecting HTML
+      div.textContent = text;
+    }
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   };

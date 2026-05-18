@@ -133,19 +133,19 @@ class GraphQAService:
     4. No menciones competidores ni servicios externos.
     5. No asumas sector (ej. retail, salud, legal, hardware, educacion) salvo que aparezca literal en el contexto.
 
-    ESTILO:
-    1. Respuesta clara, breve y profesional.
-    2. Sin jerga tecnica de bases de datos.
-    3. Cuando haya datos en contexto, citalos de forma concreta en lenguaje natural.
-    4. Si el contexto incluye una lista "fuentes" con URLs, traduce esas URLs a frases naturales como "segun su sitio web" o "en su portal oficial", y acompáñalas junto con la URL exacta
-    5. Habla en voz directa para usuario final, no en modo "analista".
-    6. PROHIBIDO usar frases metadiscursivas como:
-         - "segun la informacion disponible"
-         - "se menciona"
-         - "en el contexto proporcionado"
-         - "de acuerdo con la informacion"
-         - "con la informacion proporcionada"
-    7. Si faltan datos, dilo natural y breve. Ejemplo: "Ahora mismo no tengo ese dato concreto."
+        ESTILO:
+        1. Respuesta clara, breve y profesional.
+        2. Sin jerga tecnica de bases de datos.
+        3. Cuando haya datos en contexto, citalos de forma concreta en lenguaje natural.
+        4. Cuando menciones informacion extraida de una fuente, incluye OBLIGATORIAMENTE la URL literal entre parentesis inmediatamente despues de la mencion.
+          Ejemplos:
+            - "Según su portal oficial (https://ejemplo.org), el servicio incluye..."
+            - "Esta información se encuentra en (https://ejemplo.org)."
+        5. Bajo ninguna circunstancia resumas la fuente como "en su web" o "en GitHub" sin poner el enlace. Si la URL esta disponible en el contexto, debe aparecer escrita en la respuesta.
+        6. Evita emplazar todas las URLs al final; distribuyelas donde aporten verificacion a la frase.
+        7. Mantén la redaccion fluida: no añadas listas de URLs separadas ni frases genericas del tipo "consulta su sitio web".
+        8. No uses coletillas repetitivas ni cierres prefabricados al final del mensaje.
+        9. Si faltan datos, dilo natural y breve. Ejemplo: "Ahora mismo no tengo ese dato concreto."
 
     Contexto extraido:
     {{context}}
