@@ -235,8 +235,18 @@
 
   const linkify = (raw) => {
     const escaped = escapeHtml(String(raw || ""));
-    const urlRegex = /(https?:\/\/[^\s)]+)/g;
-    return escaped.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+    const urlRegex = /(https?:\/\/[^\s<>"]+)/g;
+    return escaped.replace(urlRegex, (match) => {
+      let url = match;
+      let trailing = "";
+
+      while (/[.,;:!?\)\]\}]+$/.test(url)) {
+        trailing = url.slice(-1) + trailing;
+        url = url.slice(0, -1);
+      }
+
+      return `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>${trailing}`;
+    });
   };
 
   const addMessage = (text, role = "bot") => {
