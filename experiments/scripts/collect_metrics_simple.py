@@ -6,11 +6,17 @@ Writes CSV to experiments/results/simple_results_with_density.csv
 import os
 import csv
 import argparse
-from urllib.parse import urlparse
-import requests
+import asyncio
+import sys
 import urllib3
-from bs4 import BeautifulSoup
 from neo4j import GraphDatabase
+from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, BrowserConfig
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from app.services.schedule_knowledge import limpiar_markdown
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), '..', 'results')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -20,7 +26,8 @@ NEO4J_URI = os.getenv('NEO4J_URI')
 NEO4J_USER = os.getenv('NEO4J_USER', 'neo4j')
 NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD', '')
 ALLOW_INSECURE_TLS_FALLBACK = os.getenv('ALLOW_INSECURE_TLS_FALLBACK', 'true').lower() in {'1', 'true', 'yes', 'on'}
-MAX_URLS_PER_CLIENT = int(os.getenv('METRICS_MAX_URLS_PER_CLIENT', '20'))
+MAX_SOURCE_URLS = int(os.getenv('METRICS_MAX_SOURCE_URLS', '0'))
+FETCH_WORKERS = max(1, int(os.getenv('METRICS_FETCH_WORKERS', '3')))
 HEADERS = {'User-Agent': 'Noctua-Metrics-Agent/1.0'}
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -28,16 +35,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 if not NEO4J_URI:
     print('NEO4J_URI not set. Please set NEO4J_URI, NEO4J_USER and NEO4J_PASSWORD environment variables.')
     raise SystemExit(1)
-
-
-def host_from_url(u):
-    try:
-        host = urlparse(u).netloc
-        if host.startswith('www.'):
-            host = host[4:]
-        return host.lower()
-    except Exception:
-        return u
 
 
 def count_nodes_edges(session, client_id):
@@ -48,41 +45,73 @@ def count_nodes_edges(session, client_id):
     return int(nodes), int(edges)
 
 
-def extract_text(html: str) -> str:
-    soup = BeautifulSoup(html, 'html.parser')
-    for s in soup(['script', 'style', 'header', 'footer', 'nav', 'aside']):
-        s.decompose()
-    text = soup.get_text(separator='\n')
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    return '\n'.join(lines)
+async def _crawl_markdown(url: str, crawler: AsyncWebCrawler):
+    config = CrawlerRunConfig(
+        exclude_external_links=True,
+        exclude_all_images=True,
+        excluded_tags=["footer", "aside", "header", "script", "style"],
+        word_count_threshold=15,
+        verbose=False,
+    )
+    result = await crawler.arun(url=url, config=config)
+    if not result or not result.success:
+        return ""
+    return getattr(result, "markdown", "") or ""
 
 
-def _get_with_tls_fallback(url: str, timeout: int = 10):
-    try:
-        return requests.get(url, headers=HEADERS, timeout=timeout)
-    except requests.exceptions.SSLError:
-        if ALLOW_INSECURE_TLS_FALLBACK:
-            return requests.get(url, headers=HEADERS, timeout=timeout, verify=False)
-        raise
-
-
-def fetch_size_kb(urls, timeout=10, max_per_client=20):
+async def _crawl_worker(url_queue: asyncio.Queue):
     total_chars = 0
     checked = 0
     ok = 0
-    for u in urls:
-        if checked >= max_per_client:
-            break
-        checked += 1
-        try:
-            r = _get_with_tls_fallback(u, timeout=timeout)
-            if r.status_code == 200 and r.text:
-                total_chars += len(extract_text(r.text))
-                ok += 1
-        except Exception as e:
-            print(f"  Warning: failed to fetch {u}: {e}")
-            continue
+    browser_config = BrowserConfig(ignore_https_errors=ALLOW_INSECURE_TLS_FALLBACK)
+    async with AsyncWebCrawler(config=browser_config) as crawler:
+        while True:
+            url = await url_queue.get()
+            try:
+                if url is None:
+                    return total_chars, checked, ok
+                checked += 1
+                try:
+                    markdown = await _crawl_markdown(url, crawler)
+                    markdown_limpio = limpiar_markdown(markdown)
+                    if markdown_limpio.strip():
+                        total_chars += len(markdown_limpio)
+                        ok += 1
+                except Exception as e:
+                    print(f"  Warning: failed to fetch {url}: {e}")
+            finally:
+                url_queue.task_done()
+
+
+async def fetch_size_kb(urls):
+    urls = list(urls)
+    if not urls:
+        return 0.0, 0, 0
+
+    url_queue: asyncio.Queue = asyncio.Queue()
+    for url in urls:
+        url_queue.put_nowait(url)
+
+    worker_count = min(FETCH_WORKERS, len(urls))
+    for _ in range(worker_count):
+        url_queue.put_nowait(None)
+
+    workers = [asyncio.create_task(_crawl_worker(url_queue)) for _ in range(worker_count)]
+    await url_queue.join()
+    totals = await asyncio.gather(*workers)
+
+    total_chars = sum(item[0] for item in totals)
+    checked = sum(item[1] for item in totals)
+    ok = sum(item[2] for item in totals)
     return (total_chars / 1024.0 if total_chars else 0.0), checked, ok
+
+
+def fetch_source_urls(session, client_id):
+    query = "MATCH (s:Source {client_id: $cid}) RETURN collect(distinct s.url) AS urls"
+    urls = session.run(query, cid=client_id).single().get('urls', []) or []
+    if MAX_SOURCE_URLS > 0:
+        return urls[:MAX_SOURCE_URLS]
+    return urls
 
 
 def sample_host_for_client(session, client_id):
@@ -94,7 +123,7 @@ def sample_host_for_client(session, client_id):
     rec = session.run(q, cid=client_id).single()
     if not rec or not rec.get('url'):
         return ''
-    return host_from_url(rec['url'])
+    return rec['url']
 
 
 def parse_args():
@@ -137,13 +166,10 @@ def main():
     with driver.session() as session:
         for cid in explicit_client_ids:
             V, E = count_nodes_edges(session, cid)
-            domain = sample_host_for_client(session, cid)
-            domain_label = named_map.get(cid) or domain or 'manual'
-            urls = session.run(
-                "MATCH (s:Source {client_id: $cid}) RETURN collect(distinct s.url)[0..50] AS urls",
-                cid=cid,
-            ).single().get('urls', []) or []
-            S_kb, checked, ok = fetch_size_kb(urls, max_per_client=MAX_URLS_PER_CLIENT)
+            sample_url = sample_host_for_client(session, cid)
+            domain_label = named_map.get(cid) or sample_url or 'manual'
+            urls = fetch_source_urls(session, cid)
+            S_kb, checked, ok = asyncio.run(fetch_size_kb(urls))
             D = (V + E) / S_kb if S_kb > 0 else None
             print(
                 f'  client_id={cid} ({domain_label}) -> V={V}, E={E}, '

@@ -1,6 +1,8 @@
 domain,client_id,V,E,S_kb,D,urls_total,urls_checked,urls_ok
-NOCTUA,ba6c6b9e-aab1-4617-bb967-d6d65ad37b3,90,72,6.39,25.369017,1,1,1
-ClaudeDocs,b912a1f1-a7b2-4625-a5e7-281daa4d42e9,74,56,11.9,10.925804,1,1,1
-Egasound,ffd449b5-881e-450d-a89d-3d9635745377,31,22,1.98,26.721812,1,1,1
-Departamento de Ciencias de la Computación e Inteligencia Artificial,c0559ca2-884e-4a26-b637-564896f7cfea,626,1261,30.67,61.528037,50,20,20
-Faisem,f01597dd-5911-431a-b772-0fba90a65532,2569,3402,134.01,44.556779,50,20,20
+NOCTUA,ba6c6b9e-aab1-4617-bb967-d6d65ad37b3,90,72,6.36,25.47029,1,1,1
+ClaudeDocs,b912a1f1-a7b2-4625-a5e7-281daa4d42e9,74,56,4.44,29.250714,1,1,1
+Egasound,ffd449b5-881e-450d-a89d-3d9635745377,31,22,2.09,25.384471,1,1,1
+Departamento de Ciencias de la Computación e Inteligencia Artificial,c0559ca2-884e-4a26-b637-564896f7cfea,626,1261,86.85,21.727702,130,130,99
+Faisem,f01597dd-5911-431a-b772-0fba90a65532,2569,3402,495.37,12.05359,88,88,88
+Ayuntamiento de Gines,5f5632b2-1831-439f-aba2-208be90f015a,2531,2839,414.21,12.964592,151,151,151
+Escuela Técnica Superior de Ingeniería Informática,cb09285c-3309-4966-b425-fb7705b71f44,6152,6474,675.2,18.699747,389,389,388
